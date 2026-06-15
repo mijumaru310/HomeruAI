@@ -105,6 +105,11 @@ export default function ReplayPlayer({
     [strokes, getTimelineRange, setReplayedStrokes]
   );
 
+  // currentTime の更新を検知して安全に Canvas にストロークを反映する（レンダー中のsetState防止）
+  useEffect(() => {
+    updateReplayedStrokes(currentTime);
+  }, [currentTime, updateReplayedStrokes]);
+
   // 再生のアニメーションループ
   const animate = useCallback(
     (timestamp: number) => {
@@ -125,7 +130,6 @@ export default function ReplayPlayer({
           }
           return totalDuration;
         }
-        updateReplayedStrokes(nextTime);
         return nextTime;
       });
 
@@ -133,7 +137,7 @@ export default function ReplayPlayer({
         animationFrameRef.current = requestAnimationFrame(animate);
       }
     },
-    [isPlaying, speed, totalDuration, updateReplayedStrokes, setIsReplaying]
+    [isPlaying, speed, totalDuration, setIsReplaying]
   );
 
   // 再生・一時停止のトリガー

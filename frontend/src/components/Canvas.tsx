@@ -306,8 +306,9 @@ export default function Canvas({
       <div
         className="no-scroll-touch relative rounded-lg overflow-hidden shadow-2xl border border-slate-700 bg-slate-800"
         style={{
-          width: `${canvasDimensions.width}px`,
-          height: `${canvasDimensions.height}px`,
+          width: canvasDimensions.width > 0 ? `${canvasDimensions.width}px` : "100%",
+          height: canvasDimensions.height > 0 ? `${canvasDimensions.height}px` : "auto",
+          aspectRatio: canvasDimensions.width > 0 ? undefined : "4/3",
           backgroundImage: `url(${bgImageUrl})`,
           backgroundSize: "contain",
           backgroundPosition: "center",
