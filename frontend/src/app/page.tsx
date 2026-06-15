@@ -53,8 +53,8 @@ export default function Home() {
     }
   };
 
-  // AI分析シミュレーション
-  const handleAnalyze = () => {
+  // AI分析の実行（ローカルAPI接続 ＋ フォールバックモック）
+  const handleAnalyze = async () => {
     if (strokes.length === 0) {
       alert("分析する手書きプロセスがありません。まずはキャンバスに解答を記述してください。");
       return;
@@ -63,11 +63,52 @@ export default function Home() {
     setIsAnalyzing(true);
     setAiAnalysisResult(null);
     
-    // 1.5秒のモックローディング
-    setTimeout(() => {
+    try {
+      const response = await fetch("http://localhost:8000/api/analyze", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          questionId: "q_01",
+          strokes: strokes.map(s => ({
+            strokeId: s.strokeId,
+            type: s.type,
+            startTime: s.startTime,
+            endTime: s.endTime,
+            points: s.points.map(p => ({
+              x: p.x,
+              y: p.y,
+              p: p.p,
+              t: p.t
+            })),
+            color: s.color,
+            width: s.width,
+            isErased: s.isErased || false,
+            erasedAt: s.erasedAt,
+            targetStrokeIds: s.targetStrokeIds
+          }))
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`API error: ${response.status}`);
+      }
+
+      const result = await response.json();
+      setAiAnalysisResult(result);
+    } catch (error) {
+      console.warn("FastAPI backend connection failed. Using mock fallback.", error);
+      
+      // 接続失敗時はデモ用にモックデータへフォールバック
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      setAiAnalysisResult({
+        ...mockAiFeedback,
+        "総合評価": `${mockAiFeedback["総合評価"]} (※ローカルバックエンドAPI接続エラーのため、デモ用モックデータを表示しています。開発サーバー http://localhost:8000 を起動し、必要であれば.envにAPIキーを設定してください)`
+      });
+    } finally {
       setIsAnalyzing(false);
-      setAiAnalysisResult(mockAiFeedback);
-    }, 1800);
+    }
   };
 
   // ペンカラーのバリエーション

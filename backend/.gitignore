@@ -1,0 +1,12 @@
+# Python virtual environment
+venv/
+
+# Environment variables
+.env
+
+# Python compilation cache
+__pycache__/
+*.pyc
+
+# Local debug outputs
+temp_renders/
