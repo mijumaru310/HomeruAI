@@ -78,11 +78,11 @@ export default function Home() {
   ];
 
   return (
-    <main className="w-full h-screen overflow-hidden flex flex-col md:flex-row p-4 gap-4 bg-slate-950 text-slate-100">
+    <main className="w-full h-[100dvh] overflow-hidden flex flex-col md:flex-row p-4 gap-4 bg-slate-950 text-slate-100">
       
       {/* 1. キャンバスエリア (左側) */}
-      <div className="flex-1 h-[60vh] md:h-full flex flex-col gap-3">
-        <div className="flex items-center justify-between px-2">
+      <div className="flex-1 min-h-0 flex flex-col gap-3">
+        <div className="flex items-center justify-between px-2 flex-shrink-0">
           <div className="flex items-center gap-2">
             <span className="bg-indigo-600/20 text-indigo-400 border border-indigo-500/30 text-xs px-2.5 py-1 rounded-full font-medium">
               Target: iPad + Apple Pencil
@@ -97,7 +97,7 @@ export default function Home() {
           </div>
         </div>
 
-        <div className="flex-1 w-full rounded-2xl overflow-hidden border border-slate-800 shadow-2xl relative">
+        <div className="flex-1 min-h-0 w-full rounded-2xl overflow-hidden border border-slate-800 shadow-2xl relative">
           <Canvas
             strokes={isReplaying ? replayedStrokes : strokes}
             setStrokes={setStrokes}
@@ -122,7 +122,7 @@ export default function Home() {
       </div>
 
       {/* 2. コントロール & フィードバックエリア (右側) */}
-      <div className="w-full md:w-[380px] h-[38vh] md:h-full flex flex-col gap-4 overflow-y-auto pr-1">
+      <div className="w-full md:w-[380px] h-full flex flex-col gap-4 overflow-y-auto pr-1 min-h-0 md:flex-shrink-0">
         
         {/* コントロールエリア */}
         <div className="glass-panel p-4 flex flex-col gap-4">

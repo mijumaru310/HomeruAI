@@ -35,6 +35,39 @@ export default function Canvas({
   const [isDrawing, setIsDrawing] = useState(false);
   const [currentStroke, setCurrentStroke] = useState<Stroke | null>(null);
   const [eraserPosition, setEraserPosition] = useState<{ x: number; y: number } | null>(null);
+  const [canvasDimensions, setCanvasDimensions] = useState({ width: 0, height: 0 });
+
+  // コンテナのサイズに応じて4:3のアスペクト比を保ちつつ、はみ出さないサイズを動的計算
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const resizeObserver = new ResizeObserver((entries) => {
+      if (!entries || entries.length === 0) return;
+      const { width, height } = entries[0].contentRect;
+
+      const targetRatio = CANVAS_WIDTH / CANVAS_HEIGHT;
+      const containerRatio = width / height;
+
+      let finalWidth = 0;
+      let finalHeight = 0;
+
+      if (containerRatio > targetRatio) {
+        // 親コンテナが横長 -> 高さいっぱいにフィット
+        finalHeight = height;
+        finalWidth = height * targetRatio;
+      } else {
+        // 親コンテナが縦長 -> 幅いっぱいにフィット
+        finalWidth = width;
+        finalHeight = width / targetRatio;
+      }
+
+      setCanvasDimensions({ width: finalWidth, height: finalHeight });
+    });
+
+    resizeObserver.observe(container);
+    return () => resizeObserver.disconnect();
+  }, []);
 
   // スクリーン座標からCanvas論理座標（1024x768）への変換
   const getCanvasCoords = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
@@ -269,12 +302,12 @@ export default function Canvas({
         overscrollBehavior: "none",
       }}
     >
-      {/* 描画キャンバスのコンテナ (アスペクト比 4:3 固定) */}
+      {/* 描画キャンバスのコンテナ (アスペクト比 4:3 フィット) */}
       <div
-        className="no-scroll-touch relative w-full max-w-full max-h-full aspect-[4/3] rounded-lg overflow-hidden shadow-2xl border border-slate-700 bg-slate-800"
+        className="no-scroll-touch relative rounded-lg overflow-hidden shadow-2xl border border-slate-700 bg-slate-800"
         style={{
-          width: "100%",
-          maxHeight: "100%",
+          width: `${canvasDimensions.width}px`,
+          height: `${canvasDimensions.height}px`,
           backgroundImage: `url(${bgImageUrl})`,
           backgroundSize: "contain",
           backgroundPosition: "center",
