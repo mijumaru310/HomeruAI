@@ -35,7 +35,14 @@ async def analyze_strokes(request: AnalysisRequest):
         
     try:
         # 1. Ghost Rendering による画像レンダリング (Pillow)
-        rendered_image = render_strokes(request.strokes, request.questionId)
+        # 拡張された背景画像を転送する
+        rendered_image = render_strokes(
+            strokes=request.strokes,
+            question_id=request.questionId,
+            background_image_base64=request.backgroundImage,
+            image_width=request.imageWidth,
+            image_height=request.imageHeight
+        )
         
         # デバッグ用: サーバーが生成した直近の Ghost Rendering 画像を保存 (目視確認用)
         temp_dir = "temp_renders"

@@ -1,9 +1,10 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useRef } from "react";
 import Canvas from "../components/Canvas";
 import ReplayPlayer from "../components/ReplayPlayer";
 import { Stroke } from "../types/canvas";
+import { Pan } from "../hooks/useCanvasTransform";
 import { 
   PenTool, 
   Eraser, 
@@ -14,38 +15,67 @@ import {
   ChevronUp, 
   HelpCircle,
   Lightbulb,
-  Award
+  Award,
+  Upload,
+  FileText,
+  Maximize2,
+  RefreshCw,
+  Eye,
+  EyeOff
 } from "lucide-react";
 
-// AIフィードバックのモックデータ
+// AIフィードバックのデフォルトモックデータ
 const mockAiFeedback = {
-  "総合評価": "最後まで諦めずに、補助線を引いて異なるアプローチを試したプロセスが非常に素晴らしいです！最終的な計算ミスはありますが、三角形の面積の公式と三平方の定理の理解は完璧にできています。",
+  "総合評価": "最後まで諦めずに、自分で誤りに気づいて消しゴムで修正を試みながら解き進めたプロセスが本当に素晴らしいです！",
   "プロセスへの称賛ポイント": [
-    "直角三角形であること（6:8:10 = 3:4:5）に気づき、底辺と高さを正しく特定しようとした点。",
-    "一度底辺と高さを逆に書いて消しゴムで修正した形跡があり、自分のミスに素早く気付いて自己修復できた柔軟性。",
-    "計算途中で10秒以上ペンが止まった時間（迷い）がありましたが、そこから逃げずに最後まで解ききった粘り強さ。"
+    "一度書いたアプローチを消しゴムで消し、別の視点から式を組み立て直した柔軟性。",
+    "計算途中で手が止まった時間がありましたが、投げ出さずに思考を巡らせた粘り強さ。",
+    "手書きのプロセスの中に、正解へつながる本質的な理解のステップがはっきりと残っています。"
   ],
-  "惜しい点（ヒント）": "底辺が6、高さが8のときの面積計算（6 × 8 ÷ 2）の最後の割り算をもう一度見直してみましょう。掛け算は48で合っていますよ！",
+  "惜しい点（ヒント）": "計算の最後のステップで掛け算または割り算に少しのズレが生じている可能性があります。もう一度最後の2行を確認してみましょう！",
   "思考タイプラベル": "粘り強い探索者 🔍"
 };
 
 export default function Home() {
+  // 描画・トランスフォーム（パン・ズーム）ステート
   const [strokes, setStrokes] = useState<Stroke[]>([]);
   const [replayedStrokes, setReplayedStrokes] = useState<Stroke[]>([]);
   const [isReplaying, setIsReplaying] = useState(false);
   
+  const [pan, setPan] = useState<Pan>({ x: 0, y: 0 });
+  const [zoom, setZoom] = useState<number>(1);
+  
+  // 描画ツール設定
   const [tool, setTool] = useState<"pen" | "eraser">("pen");
-  const [brushColor, setBrushColor] = useState<string>("#1e293b"); // 紙のノートに合うダークカラー
+  const [brushColor, setBrushColor] = useState<string>("#1e293b"); // デフォルト: 濃いダークグレー
   const [brushWidth, setBrushWidth] = useState<number>(4);
   const [eraserWidth, setEraserWidth] = useState<number>(30);
   
+  // 背景画像ステート (白紙モード時は null)
+  const [bgImageUrl, setBgImageUrl] = useState<string | null>(null);
+  const [bgImageBase64, setBgImageBase64] = useState<string | null>(null);
+  const [bgImageSize, setBgImageSize] = useState<{ width: number; height: number } | null>(null);
+  const [bgFileName, setBgFileName] = useState<string | null>(null);
+  
+  // タイムラプスリプレイリボンの表示フラグ
+  const [showReplay, setShowReplay] = useState(false);
+  
+  // AIフィードバック・デバッグステート
   const [aiAnalysisResult, setAiAnalysisResult] = useState<typeof mockAiFeedback | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [showDebug, setShowDebug] = useState(false);
+  
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  // キャンバスの全クリア
+  // トランスフォーム（パン・ズーム）リセット
+  const handleResetTransform = () => {
+    setPan({ x: 0, y: 0 });
+    setZoom(1);
+  };
+
+  // キャンバス全消去
   const handleClear = () => {
-    if (window.confirm("ノートをすべて消去して書き直しますか？")) {
+    if (window.confirm("キャンバスの内容をすべて消去して書き直しますか？")) {
       setStrokes([]);
       setReplayedStrokes([]);
       setIsReplaying(false);
@@ -53,10 +83,43 @@ export default function Home() {
     }
   };
 
-  // AI分析の実行（ローカルAPI接続 ＋ フォールバックモック）
+  // 白紙ページモードへ切り替え
+  const handleSetBlank = () => {
+    setBgImageUrl(null);
+    setBgImageBase64(null);
+    setBgImageSize(null);
+    setBgFileName(null);
+    handleResetTransform();
+    setAiAnalysisResult(null);
+  };
+
+  // 画像ファイルアップロード処理
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const base64 = event.target?.result as string;
+      setBgImageBase64(base64);
+      
+      const img = new Image();
+      img.src = base64;
+      img.onload = () => {
+        setBgImageSize({ width: img.width, height: img.height });
+        setBgImageUrl(base64);
+        setBgFileName(file.name);
+        handleResetTransform();
+        setAiAnalysisResult(null);
+      };
+    };
+    reader.readAsDataURL(file);
+  };
+
+  // AI分析送信
   const handleAnalyze = async () => {
     if (strokes.length === 0) {
-      alert("分析する手書きプロセスがありません。まずはキャンバスに解答を記述してください。");
+      alert("分析する手書きプロセスがありません。キャンバスに記述してください。");
       return;
     }
     
@@ -70,24 +133,22 @@ export default function Home() {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          questionId: "q_01",
+          questionId: bgFileName ? "custom_upload" : "blank_page",
           strokes: strokes.map(s => ({
             strokeId: s.strokeId,
             type: s.type,
             startTime: s.startTime,
             endTime: s.endTime,
-            points: s.points.map(p => ({
-              x: p.x,
-              y: p.y,
-              p: p.p,
-              t: p.t
-            })),
+            points: s.points.map(p => ({ x: p.x, y: p.y, p: p.p, t: p.t })),
             color: s.color,
             width: s.width,
             isErased: s.isErased || false,
             erasedAt: s.erasedAt,
             targetStrokeIds: s.targetStrokeIds
-          }))
+          })),
+          backgroundImage: bgImageBase64,
+          imageWidth: bgImageSize?.width,
+          imageHeight: bgImageSize?.height
         })
       });
 
@@ -98,9 +159,9 @@ export default function Home() {
       const result = await response.json();
       setAiAnalysisResult(result);
     } catch (error) {
-      console.warn("FastAPI backend connection failed. Using mock fallback.", error);
+      console.warn("FastAPI connection failed. Using mock fallback.", error);
       
-      // 接続失敗時はデモ用にモックデータへフォールバック
+      // 接続エラー時はデモフォールバック
       await new Promise(resolve => setTimeout(resolve, 1500));
       setAiAnalysisResult({
         ...mockAiFeedback,
@@ -111,34 +172,199 @@ export default function Home() {
     }
   };
 
-  // ペンカラーのバリエーション
   const colors = [
-    { value: "#1e293b", label: "Dark" },  // メインペン
-    { value: "#2563eb", label: "Blue" },  // 思考整理用
-    { value: "#ef4444", label: "Red" },   // 強調・自己採点用
+    { value: "#1e293b", label: "Dark" },
+    { value: "#2563eb", label: "Blue" },
+    { value: "#ef4444", label: "Red" },
   ];
 
   return (
-    <main className="w-full h-[100dvh] overflow-hidden flex flex-col md:flex-row p-4 gap-4 bg-slate-950 text-slate-100">
+    <main className="w-full h-screen overflow-hidden flex flex-col bg-slate-950 text-slate-100 font-sans">
       
-      {/* 1. キャンバスエリア (左側) */}
-      <div className="flex-1 h-[55dvh] md:h-full flex flex-col min-h-0 gap-3">
-        <div className="flex items-center justify-between px-2 flex-shrink-0">
-          <div className="flex items-center gap-2">
-            <span className="bg-indigo-600/20 text-indigo-400 border border-indigo-500/30 text-xs px-2.5 py-1 rounded-full font-medium">
-              Target: iPad + Apple Pencil
-            </span>
-            <h1 className="text-xl font-bold tracking-tight bg-gradient-to-r from-white to-slate-400 bg-clip-text text-transparent">
-              HomeruAI <span className="text-indigo-400 text-sm font-normal">Workspace</span>
+      {/* 1. Word風 上部リボンツールバー */}
+      <header className="w-full border-b border-slate-800 bg-slate-900/90 backdrop-blur-md z-30 px-4 py-2 flex flex-col gap-2 shadow-lg flex-shrink-0">
+        
+        {/* 最上段: ロゴと分析ボタン */}
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <h1 className="text-lg font-black tracking-wider bg-gradient-to-r from-indigo-400 to-indigo-100 bg-clip-text text-transparent select-none">
+              HomeruAI <span className="text-xs font-normal text-slate-400 border border-slate-700/60 px-2 py-0.5 rounded-full">Note v2</span>
             </h1>
+            <span className="hidden sm:inline text-xs text-slate-500 font-mono">
+              ({strokes.length} strokes logged)
+            </span>
           </div>
-          <div className="text-xs text-slate-400 flex items-center gap-1.5">
-            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-            <span>筆記プロセス記録中 ({strokes.length} strokes)</span>
+
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleAnalyze}
+              disabled={strokes.length === 0 || isAnalyzing || isReplaying}
+              className="btn btn-accent py-1.5 px-4 font-bold flex items-center gap-2 text-xs uppercase tracking-wider rounded-lg h-9"
+            >
+              <Sparkles size={14} className={isAnalyzing ? "animate-spin" : ""} />
+              {isAnalyzing ? "分析中..." : "思考をAI分析"}
+            </button>
           </div>
         </div>
 
-        <div className="flex-1 min-h-0 w-full rounded-2xl overflow-hidden border border-slate-800 shadow-2xl relative">
+        {/* 下段: Wordリボン風の機能グループ */}
+        <div className="flex items-center gap-4 overflow-x-auto pb-1 select-none scrollbar-thin">
+          
+          {/* グループ1: ドキュメント / モード設定 */}
+          <div className="flex items-center gap-1.5 pr-4 border-r border-slate-800 flex-shrink-0">
+            <button
+              onClick={handleSetBlank}
+              className={`btn text-xs py-1.5 px-2.5 rounded-lg flex items-center gap-1.5 h-8 ${!bgImageUrl ? "btn-active bg-indigo-500/20 text-indigo-300 border-indigo-500/30" : ""}`}
+              title="Blank Page"
+            >
+              <FileText size={14} />
+              <span>白紙</span>
+            </button>
+            
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              className={`btn text-xs py-1.5 px-2.5 rounded-lg flex items-center gap-1.5 h-8 ${bgImageUrl ? "btn-active bg-indigo-500/20 text-indigo-300 border-indigo-500/30" : ""}`}
+              title="Upload custom math problem image"
+            >
+              <Upload size={14} />
+              <span className="max-w-[80px] truncate">{bgFileName || "問題アップロード"}</span>
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              onChange={handleFileUpload}
+              className="hidden"
+            />
+          </div>
+
+          {/* グループ2: ツール選択 */}
+          <div className="flex items-center gap-1.5 pr-4 border-r border-slate-800 flex-shrink-0">
+            <button
+              onClick={() => setTool("pen")}
+              disabled={isReplaying}
+              className={`btn text-xs py-1.5 px-3 rounded-lg flex items-center gap-1.5 h-8 ${tool === "pen" && !isReplaying ? "btn-active bg-indigo-500/20 text-indigo-300 border-indigo-500/40" : ""}`}
+              title="Pen Tool"
+            >
+              <PenTool size={14} />
+              <span>ペン</span>
+            </button>
+            
+            <button
+              onClick={() => setTool("eraser")}
+              disabled={isReplaying}
+              className={`btn text-xs py-1.5 px-3 rounded-lg flex items-center gap-1.5 h-8 ${tool === "eraser" && !isReplaying ? "btn-active bg-indigo-500/20 text-indigo-300 border-indigo-500/40" : ""}`}
+              title="Object Eraser Tool"
+            >
+              <Eraser size={14} />
+              <span>消しゴム</span>
+            </button>
+          </div>
+
+          {/* グループ3: ブラシプロパティ */}
+          <div className="flex items-center gap-3 pr-4 border-r border-slate-800 flex-shrink-0 h-8">
+            {tool === "pen" ? (
+              <>
+                <div className="flex gap-1.5">
+                  {colors.map((c) => (
+                    <button
+                      key={c.value}
+                      onClick={() => setBrushColor(c.value)}
+                      className="w-5 h-5 rounded-full border transition-all flex items-center justify-center flex-shrink-0"
+                      style={{
+                        backgroundColor: c.value === "#1e293b" ? "#ffffff" : c.value,
+                        borderColor: brushColor === c.value ? "#818cf8" : "transparent",
+                      }}
+                      title={c.label}
+                    >
+                      {c.value === "#1e293b" && (
+                        <span className="w-2.5 h-2.5 rounded-full bg-slate-800"></span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+                
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] text-slate-400">太さ:</span>
+                  <input
+                    type="range"
+                    min="2"
+                    max="15"
+                    value={brushWidth}
+                    onChange={(e) => setBrushWidth(parseInt(e.target.value))}
+                    className="w-16 h-1 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-indigo-500"
+                  />
+                  <span className="text-[10px] font-mono text-slate-300 w-6">{brushWidth}px</span>
+                </div>
+              </>
+            ) : (
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] text-slate-400">消しゴム径:</span>
+                <input
+                  type="range"
+                  min="10"
+                  max="80"
+                  value={eraserWidth}
+                  onChange={(e) => setEraserWidth(parseInt(e.target.value))}
+                  className="w-20 h-1 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-indigo-500"
+                />
+                <span className="text-[10px] font-mono text-slate-300 w-6">{eraserWidth}px</span>
+              </div>
+            )}
+          </div>
+
+          {/* グループ4: キャンバス操作 (クリア・ズームリセット) */}
+          <div className="flex items-center gap-1.5 pr-4 border-r border-slate-800 flex-shrink-0">
+            <button
+              onClick={handleResetTransform}
+              className="btn text-xs py-1.5 px-2.5 rounded-lg flex items-center gap-1.5 h-8 text-slate-300 hover:text-white"
+              title="Reset Zoom & Scroll"
+            >
+              <Maximize2 size={13} />
+              <span>等倍リセット ({(zoom * 100).toFixed(0)}%)</span>
+            </button>
+            
+            <button
+              onClick={handleClear}
+              className="btn btn-danger text-xs py-1.5 px-2.5 rounded-lg flex items-center gap-1.5 h-8"
+              title="Clear Note"
+            >
+              <Trash2 size={13} />
+              <span>全消去</span>
+            </button>
+          </div>
+
+          {/* グループ5: リプレイ */}
+          <div className="flex items-center gap-2 flex-shrink-0">
+            <button
+              onClick={() => setShowReplay(!showReplay)}
+              disabled={strokes.length === 0}
+              className={`btn text-xs py-1.5 px-3 rounded-lg flex items-center gap-1.5 h-8 ${showReplay ? "bg-indigo-500/20 text-indigo-300 border-indigo-500/30" : "text-slate-300"} disabled:opacity-40`}
+            >
+              {showReplay ? <EyeOff size={13} /> : <Eye size={13} />}
+              <span>タイムラプス</span>
+            </button>
+
+            {showReplay && strokes.length > 0 && (
+              <div className="animate-fadeIn">
+                <ReplayPlayer
+                  strokes={strokes}
+                  isReplaying={isReplaying}
+                  setIsReplaying={setIsReplaying}
+                  setReplayedStrokes={setReplayedStrokes}
+                />
+              </div>
+            )}
+          </div>
+
+        </div>
+      </header>
+
+      {/* 2. キャンバス ＆ AIサイドパネル (下部エリア) */}
+      <div className="flex flex-1 min-h-0 relative w-full h-full">
+        
+        {/* キャンバス領域 */}
+        <div className="flex-1 h-full min-h-0 relative z-10 bg-slate-900">
           <Canvas
             strokes={isReplaying ? replayedStrokes : strokes}
             setStrokes={setStrokes}
@@ -146,249 +372,156 @@ export default function Home() {
             brushColor={brushColor}
             brushWidth={brushWidth}
             eraserWidth={eraserWidth}
-            bgImageUrl="/question.png"
+            bgImageUrl={bgImageUrl}
             isReplaying={isReplaying}
+            pan={pan}
+            setPan={setPan}
+            zoom={zoom}
+            setZoom={setZoom}
+            resetTransform={handleResetTransform}
           />
 
           {isReplaying && (
-            <div className="absolute top-4 left-4 z-20 bg-indigo-500/90 text-white text-xs px-3 py-1.5 rounded-full font-semibold flex items-center gap-1.5 shadow-lg backdrop-blur-sm animate-pulse">
+            <div className="absolute top-4 left-4 z-20 bg-indigo-600/90 text-white text-xs px-3 py-1.5 rounded-full font-bold flex items-center gap-1.5 shadow-lg backdrop-blur-sm select-none animate-pulse">
               <span className="relative flex h-2 w-2">
                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-white opacity-75"></span>
                 <span className="relative inline-flex rounded-full h-2 w-2 bg-white"></span>
               </span>
-              REPLAYING TIMELAPSE
+              REPLAYING PROCESS
             </div>
           )}
-        </div>
-      </div>
 
-      {/* 2. コントロール & フィードバックエリア (右側) */}
-      <div className="w-full md:w-[380px] h-[40dvh] md:h-full flex flex-col gap-4 overflow-y-auto pr-1 min-h-0 md:flex-shrink-0">
-        
-        {/* コントロールエリア */}
-        <div className="glass-panel p-4 flex flex-col gap-4">
-          <div className="flex items-center justify-between border-b border-slate-800 pb-2">
-            <span className="text-xs font-semibold uppercase tracking-wider text-indigo-400">
-              Drawing Controls
-            </span>
-            <button
-              onClick={handleClear}
-              className="btn btn-danger py-1 px-2.5 rounded-md text-xs flex items-center gap-1"
-              title="Clear Canvas"
-            >
-              <Trash2 size={12} />
-              <span>クリア</span>
-            </button>
+          {/* 無限キャンバス操作インジケータ (左下) */}
+          <div className="absolute bottom-4 left-4 z-20 flex flex-col gap-1 text-[10px] text-slate-400 font-mono bg-slate-950/80 backdrop-blur border border-slate-800 p-2.5 rounded-lg select-none">
+            <div>ズーム: {(zoom * 100).toFixed(0)}%</div>
+            <div>スクロール: X:{pan.x.toFixed(0)}, Y:{pan.y.toFixed(0)}</div>
+            <div className="border-t border-slate-800 pt-1 mt-1 text-[9px] text-slate-500">
+              ※ PC: Wheelでズーム / 右ドラッグで移動<br/>
+              ※ iPad: Pencilで書く / 指でスクロール＆ピンチ
+            </div>
           </div>
-
-          {/* ツール選択 */}
-          <div className="grid grid-cols-2 gap-2">
-            <button
-              onClick={() => setTool("pen")}
-              disabled={isReplaying}
-              className={`btn ${
-                tool === "pen" && !isReplaying ? "btn-primary" : ""
-              } disabled:opacity-50`}
-            >
-              <PenTool size={16} />
-              <span>ペン</span>
-            </button>
-            <button
-              onClick={() => setTool("eraser")}
-              disabled={isReplaying}
-              className={`btn ${
-                tool === "eraser" && !isReplaying ? "btn-primary" : ""
-              } disabled:opacity-50`}
-            >
-              <Eraser size={16} />
-              <span>消しゴム</span>
-            </button>
-          </div>
-
-          {/* ペン詳細設定 */}
-          {tool === "pen" && (
-            <div className="flex flex-col gap-2.5 animate-fadeIn">
-              <div className="flex items-center justify-between text-xs text-slate-300">
-                <span>線の色:</span>
-                <span className="font-semibold">{colors.find(c => c.value === brushColor)?.label}</span>
-              </div>
-              <div className="flex gap-2">
-                {colors.map((c) => (
-                  <button
-                    key={c.value}
-                    onClick={() => setBrushColor(c.value)}
-                    className="w-8 h-8 rounded-full border-2 transition-all flex items-center justify-center"
-                    style={{
-                      backgroundColor: c.value === "#1e293b" ? "#ffffff" : c.value,
-                      borderColor: brushColor === c.value ? "#818cf8" : "transparent",
-                      boxShadow: brushColor === c.value ? "0 0 10px rgba(99, 102, 241, 0.5)" : "none",
-                    }}
-                  >
-                    {c.value === "#1e293b" && (
-                      <span className="w-4 h-4 rounded-full bg-slate-800"></span>
-                    )}
-                  </button>
-                ))}
-              </div>
-
-              <div className="flex flex-col gap-1 mt-1">
-                <div className="flex justify-between text-xs text-slate-400">
-                  <span>太さ:</span>
-                  <span>{brushWidth}px</span>
-                </div>
-                <input
-                  type="range"
-                  min="2"
-                  max="15"
-                  value={brushWidth}
-                  onChange={(e) => setBrushWidth(parseInt(e.target.value))}
-                  className="w-full h-1 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-indigo-500"
-                />
-              </div>
-            </div>
-          )}
-
-          {/* 消しゴム詳細設定 */}
-          {tool === "eraser" && (
-            <div className="flex flex-col gap-2 animate-fadeIn">
-              <div className="flex justify-between text-xs text-slate-400">
-                <span>消しゴムサイズ:</span>
-                <span>{eraserWidth}px</span>
-              </div>
-              <input
-                type="range"
-                min="10"
-                max="80"
-                value={eraserWidth}
-                onChange={(e) => setEraserWidth(parseInt(e.target.value))}
-                className="w-full h-1 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-indigo-500"
-              />
-            </div>
-          )}
         </div>
 
-        {/* リプレイプレイヤー */}
-        <ReplayPlayer
-          strokes={strokes}
-          isReplaying={isReplaying}
-          setIsReplaying={setIsReplaying}
-          setReplayedStrokes={setReplayedStrokes}
-        />
-
-        {/* 分析実行ボタン */}
-        <button
-          onClick={handleAnalyze}
-          disabled={strokes.length === 0 || isAnalyzing || isReplaying}
-          className="btn btn-accent py-3 w-full font-bold flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed text-sm uppercase tracking-wider"
-        >
-          <Sparkles size={18} className={isAnalyzing ? "animate-spin" : ""} />
-          {isAnalyzing ? "AIでプロセス分析中..." : "思考プロセスをAI分析"}
-        </button>
-
-        {/* AIフィードバックエリア */}
+        {/* 右側 AIフィードバックサイドパネル (AIが動き出すか結果がある場合にスライド表示) */}
         {(isAnalyzing || aiAnalysisResult) && (
-          <div className="glass-panel p-4 flex flex-col gap-4 border-indigo-500/20 bg-slate-900/50">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-2">
-              <span className="text-xs font-semibold uppercase tracking-wider text-emerald-400 flex items-center gap-1.5">
+          <aside className="absolute md:relative right-0 top-0 h-full w-full md:w-[380px] z-20 glass-panel border-t-0 border-r-0 border-b-0 border-l border-slate-800 bg-slate-950/95 backdrop-blur-md flex flex-col min-h-0 shadow-2xl animate-slideLeft">
+            
+            {/* サイドバーヘッダー */}
+            <div className="p-4 border-b border-slate-800 flex items-center justify-between flex-shrink-0">
+              <span className="text-xs font-semibold uppercase tracking-wider text-emerald-400 flex items-center gap-1.5 select-none">
                 <Award size={14} />
                 AI Process Analysis
               </span>
               {aiAnalysisResult && (
-                <span className="bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-xs px-2 py-0.5 rounded-full font-semibold">
+                <span className="bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-xs px-2.5 py-0.5 rounded-full font-bold">
                   {aiAnalysisResult["思考タイプラベル"]}
                 </span>
               )}
             </div>
 
-            {isAnalyzing ? (
-              <div className="flex flex-col items-center justify-center py-8 gap-3">
-                <div className="w-8 h-8 border-4 border-indigo-500/30 border-t-indigo-500 rounded-full animate-spin"></div>
-                <span className="text-sm text-indigo-300 font-medium animate-pulse">
-                  試行錯誤（消去・停止）の跡を解析しています...
+            {/* サイドバーコンテンツ */}
+            <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-4">
+              {isAnalyzing ? (
+                <div className="flex flex-col items-center justify-center py-20 gap-3">
+                  <div className="w-10 h-10 border-4 border-indigo-500/30 border-t-indigo-500 rounded-full animate-spin"></div>
+                  <span className="text-sm text-indigo-300 font-medium animate-pulse">
+                    試行錯誤（消去・停止）の跡を解析しています...
+                  </span>
+                </div>
+              ) : (
+                aiAnalysisResult && (
+                  <div className="flex flex-col gap-5 text-sm leading-relaxed animate-fadeIn">
+                    
+                    {/* 総合評価 */}
+                    <div>
+                      <h4 className="text-xs font-semibold text-slate-400 mb-1.5 flex items-center gap-1 select-none">
+                        <HelpCircle size={13} className="text-indigo-400" /> 総合評価
+                      </h4>
+                      <p className="text-slate-200">{aiAnalysisResult["総合評価"]}</p>
+                    </div>
+
+                    {/* プロセスへの称賛ポイント */}
+                    <div>
+                      <h4 className="text-xs font-semibold text-slate-400 mb-1.5 flex items-center gap-1 select-none">
+                        <Sparkles size={13} className="text-emerald-400" /> プロセスの称賛ポイント
+                      </h4>
+                      <ul className="list-none flex flex-col gap-2">
+                        {aiAnalysisResult["プロセスへの称賛ポイント"].map((point, index) => (
+                          <li key={index} className="text-slate-300 flex items-start gap-2">
+                            <span className="text-emerald-400 mt-1 flex-shrink-0">✓</span>
+                            <span>{point}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+
+                    {/* 惜しい点（ヒント） */}
+                    <div>
+                      <h4 className="text-xs font-semibold text-slate-400 mb-1.5 flex items-center gap-1 select-none">
+                        <Lightbulb size={13} className="text-amber-400" /> 次へのヒント
+                      </h4>
+                      <p className="text-amber-200/90 bg-amber-500/5 border border-amber-500/10 p-3 rounded-xl">
+                        {aiAnalysisResult["惜しい点（ヒント）"]}
+                      </p>
+                    </div>
+
+                  </div>
+                )
+              )}
+            </div>
+
+            {/* サイドバー最下部: 開発者ダンプ & 閉じるボタン */}
+            <div className="p-3 border-t border-slate-800 flex flex-col gap-2 flex-shrink-0 bg-slate-900/40">
+              
+              <button
+                onClick={() => setShowDebug(!showDebug)}
+                className="w-full flex items-center justify-between text-xs text-slate-400 hover:text-white transition-colors py-1"
+              >
+                <span className="flex items-center gap-1.5">
+                  <Code size={12} />
+                  <span>ストロークログJSONダンプ</span>
                 </span>
-              </div>
-            ) : (
-              aiAnalysisResult && (
-                <div className="flex flex-col gap-4 text-sm leading-relaxed animate-fadeIn">
-                  {/* 総合評価 */}
-                  <div>
-                    <h4 className="text-xs font-semibold text-slate-400 mb-1 flex items-center gap-1">
-                      <HelpCircle size={13} className="text-indigo-400" /> 総合評価
-                    </h4>
-                    <p className="text-slate-200">{aiAnalysisResult["総合評価"]}</p>
-                  </div>
+                {showDebug ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+              </button>
 
-                  {/* 称賛ポイント */}
-                  <div>
-                    <h4 className="text-xs font-semibold text-slate-400 mb-1 flex items-center gap-1">
-                      <Sparkles size={13} className="text-emerald-400" /> プロセス称賛
-                    </h4>
-                    <ul className="list-none flex flex-col gap-1.5">
-                      {aiAnalysisResult["プロセスへの称賛ポイント"].map((point, index) => (
-                        <li key={index} className="text-slate-300 flex items-start gap-1.5">
-                          <span className="text-emerald-400 mt-1">✓</span>
-                          <span>{point}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-
-                  {/* 惜しい点・ヒント */}
-                  <div>
-                    <h4 className="text-xs font-semibold text-slate-400 mb-1 flex items-center gap-1">
-                      <Lightbulb size={13} className="text-amber-400" /> 次へのヒント
-                    </h4>
-                    <p className="text-amber-200/90 bg-amber-500/5 border border-amber-500/10 p-2.5 rounded-lg">
-                      {aiAnalysisResult["惜しい点（ヒント）"]}
-                    </p>
+              {showDebug && (
+                <div className="flex flex-col gap-2 mt-1 animate-fadeIn">
+                  <div className="text-[9px] text-slate-500 font-mono leading-tight max-h-[100px] overflow-y-auto bg-slate-950 p-2 rounded border border-slate-900">
+                    {strokes.length === 0 ? (
+                      "// ストロークなし"
+                    ) : (
+                      JSON.stringify(
+                        strokes.map(s => ({
+                          strokeId: s.strokeId,
+                          type: s.type,
+                          startTime: s.startTime,
+                          endTime: s.endTime,
+                          pointsCount: s.points.length,
+                          isErased: s.isErased || false,
+                          erasedAt: s.erasedAt,
+                          targetStrokeIds: s.targetStrokeIds
+                        })), 
+                        null, 
+                        2
+                      )
+                    )}
                   </div>
                 </div>
-              )
-            )}
-          </div>
-        )}
+              )}
 
-        {/* 開発者デバッグログ（手書きログJSONダンプ確認用） */}
-        <div className="glass-panel p-3 flex flex-col gap-2">
-          <button
-            onClick={() => setShowDebug(!showDebug)}
-            className="w-full flex items-center justify-between text-xs text-slate-400 hover:text-white transition-colors"
-          >
-            <span className="flex items-center gap-1.5">
-              <Code size={12} />
-              <span>ログデータ確認 (JSON Log Dump)</span>
-            </span>
-            {showDebug ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-          </button>
-
-          {showDebug && (
-            <div className="flex flex-col gap-2 mt-2 border-t border-slate-800 pt-2 animate-fadeIn">
-              <div className="text-[10px] text-slate-500 font-mono leading-tight max-h-[150px] overflow-y-auto bg-slate-950 p-2 rounded border border-slate-900">
-                {strokes.length === 0 ? (
-                  "// ストロークはありません。キャンバスに描くとJSONがここに蓄積されます。"
-                ) : (
-                  JSON.stringify(
-                    strokes.map(s => ({
-                      strokeId: s.strokeId,
-                      type: s.type,
-                      startTime: s.startTime,
-                      endTime: s.endTime,
-                      pointsCount: s.points.length,
-                      isErased: s.isErased || false,
-                      erasedAt: s.erasedAt,
-                      targetStrokeIds: s.targetStrokeIds
-                    })), 
-                    null, 
-                    2
-                  )
-                )}
-              </div>
-              <div className="text-[10px] text-slate-400 leading-normal">
-                ※ 各ストロークは `strokeId`, `type`, `startTime`, `endTime` およびポインターの全座標履歴を保持しています。
-              </div>
+              <button
+                onClick={() => {
+                  setAiAnalysisResult(null);
+                  setIsAnalyzing(false);
+                }}
+                className="btn py-1.5 w-full text-xs font-semibold text-slate-400 hover:text-white border border-slate-800 hover:bg-slate-800"
+              >
+                フィードバックを閉じる
+              </button>
             </div>
-          )}
-        </div>
+
+          </aside>
+        )}
 
       </div>
     </main>

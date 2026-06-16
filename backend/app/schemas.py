@@ -22,6 +22,9 @@ class StrokeSchema(BaseModel):
 class AnalysisRequest(BaseModel):
     questionId: str
     strokes: List[StrokeSchema]
+    backgroundImage: Optional[str] = None  # Base64 encoded background image
+    imageWidth: Optional[int] = None      # original background image width
+    imageHeight: Optional[int] = None     # original background image height
 
 class AnalysisResponse(BaseModel):
     総合評価: str = Field(..., description="最終的な正誤によらず、試行錯誤の過程や方針を肯定し、全体を総括する評価コメント")
