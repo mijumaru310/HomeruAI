@@ -67,22 +67,110 @@ export default function Canvas({
     return { x, y };
   }, [pan, zoom]);
 
+  // 背景イメージのキャッシュ参照 (手書き中の再レンダーでの点滅を防止)
+  const loadedBgUrlRef = useRef<string | null>(null);
+
   // 背景画像の読み込み
   useEffect(() => {
     if (!bgImageUrl) {
       setBgImage(null);
+      loadedBgUrlRef.current = null;
       return;
     }
+    
+    // すでにロード済みの画像と同一のURLならリロード（クリア）を行わない
+    if (loadedBgUrlRef.current === bgImageUrl) {
+      return;
+    }
+    
     const img = new Image();
     img.src = bgImageUrl;
     img.onload = () => {
       setBgImage(img);
+      loadedBgUrlRef.current = bgImageUrl;
     };
     img.onerror = () => {
       console.error("Failed to load background image:", bgImageUrl);
       setBgImage(null);
+      loadedBgUrlRef.current = null;
     };
   }, [bgImageUrl]);
+
+  // 手書きコンテンツと背景画像の境界ボックス (ワールド座標系) を計算
+  const getContentsBounds = useCallback(() => {
+    let minX = 0;
+    let minY = 0;
+    let maxX = dimensions.width || 1024;
+    let maxY = dimensions.height || 768;
+
+    let hasContent = false;
+
+    // 背景画像がある場合
+    if (bgImage) {
+      maxX = bgImage.width;
+      maxY = bgImage.height;
+      hasContent = true;
+    }
+
+    // 手書きストロークがある場合
+    if (strokes.length > 0) {
+      let strokeMinX = Infinity;
+      let strokeMinY = Infinity;
+      let strokeMaxX = -Infinity;
+      let strokeMaxY = -Infinity;
+
+      strokes.forEach((stroke) => {
+        if (stroke.isErased || stroke.type !== "draw") return;
+        stroke.points.forEach((pt) => {
+          hasContent = true;
+          if (pt.x < strokeMinX) strokeMinX = pt.x;
+          if (pt.y < strokeMinY) strokeMinY = pt.y;
+          if (pt.x > strokeMaxX) strokeMaxX = pt.x;
+          if (pt.y > strokeMaxY) strokeMaxY = pt.y;
+        });
+      });
+
+      if (hasContent && strokeMinX !== Infinity) {
+        minX = Math.min(minX, strokeMinX);
+        minY = Math.min(minY, strokeMinY);
+        maxX = Math.max(maxX, strokeMaxX);
+        maxY = Math.max(maxY, strokeMaxY);
+      }
+    }
+
+    return { minX, minY, maxX, maxY };
+  }, [strokes, bgImage, dimensions]);
+
+  // パン位置をクランプ (Appleメモアプリのように、書いた範囲＋マージンでのみスクロール可能にする)
+  const clampPan = useCallback(
+    (targetPanX: number, targetPanY: number, currentZoom: number) => {
+      if (dimensions.width === 0 || dimensions.height === 0) {
+        return { x: targetPanX, y: targetPanY };
+      }
+      
+      const bounds = getContentsBounds();
+      // 余白マージン。画面サイズ程度スクロールアウトできるゆとりを持たせる
+      const marginX = dimensions.width * 0.4;
+      const marginY = dimensions.height * 0.4;
+
+      const contentMinX = bounds.minX - marginX;
+      const contentMinY = bounds.minY - marginY;
+      const contentMaxX = bounds.maxX + marginX;
+      const contentMaxY = bounds.maxY + marginY;
+
+      // 表示画面がコンテンツ範囲外へ完全に飛び出さないようにパンをクランプ
+      const minPanX = dimensions.width - contentMaxX * currentZoom;
+      const maxPanX = -contentMinX * currentZoom;
+      const minPanY = dimensions.height - contentMaxY * currentZoom;
+      const maxPanY = -contentMinY * currentZoom;
+
+      const clampedX = Math.min(Math.max(targetPanX, Math.min(minPanX, maxPanX)), Math.max(minPanX, maxPanX));
+      const clampedY = Math.min(Math.max(targetPanY, Math.min(minPanY, maxPanY)), Math.max(minPanY, maxPanY));
+
+      return { x: clampedX, y: clampedY };
+    },
+    [getContentsBounds, dimensions]
+  );
 
   // コンテナサイズに応じたキャンバスサイズのリサイズ処理
   useEffect(() => {
@@ -146,10 +234,10 @@ export default function Canvas({
         const mouseWorldX = (clientX - rect.left - pan.x) / prevZoom;
         const mouseWorldY = (clientY - rect.top - pan.y) / prevZoom;
 
-        setPan({
-          x: clientX - rect.left - mouseWorldX * nextZoom,
-          y: clientY - rect.top - mouseWorldY * nextZoom,
-        });
+        const targetPanX = clientX - rect.left - mouseWorldX * nextZoom;
+        const targetPanY = clientY - rect.top - mouseWorldY * nextZoom;
+
+        setPan(clampPan(targetPanX, targetPanY, nextZoom));
 
         return nextZoom;
       });
@@ -159,7 +247,7 @@ export default function Canvas({
     return () => {
       canvas.removeEventListener("wheel", handleWheel);
     };
-  }, [pan, setPan, setZoom]);
+  }, [pan, setPan, setZoom, clampPan]);
 
   // 描画処理
   const draw = useCallback(() => {
@@ -173,7 +261,7 @@ export default function Canvas({
 
     // 1. 無限方眼グリッドの描画 (パン・ズームに追従)
     ctx.save();
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.04)";
+    ctx.strokeStyle = "rgba(0, 0, 0, 0.06)"; // 白紙に合う薄いグレー
     ctx.lineWidth = 1;
     
     // グリッド線の間隔 (ワールド座標系で50pxごと)
@@ -206,7 +294,7 @@ export default function Canvas({
     ctx.stroke();
     
     // ワールドの原点 (0,0) を示す薄い十字軸（白紙時のガイド用）
-    ctx.strokeStyle = "rgba(99, 102, 241, 0.15)";
+    ctx.strokeStyle = "rgba(99, 102, 241, 0.25)";
     ctx.lineWidth = 1.5;
     ctx.beginPath();
     ctx.moveTo(startX, 0);
@@ -381,7 +469,7 @@ export default function Canvas({
         // 1本指パン
         const dx = screenX - lastPanPosRef.current.x;
         const dy = screenY - lastPanPosRef.current.y;
-        setPan((prev) => ({ x: prev.x + dx, y: prev.y + dy }));
+        setPan((prev) => clampPan(prev.x + dx, prev.y + dy, zoom));
         lastPanPosRef.current = { x: screenX, y: screenY };
       } else if (activePointersRef.current.size === 2 && pinchStartDistanceRef.current && pinchStartZoomRef.current !== null) {
         // 2本指ピンチズーム & パン
@@ -401,10 +489,10 @@ export default function Canvas({
           const mouseWorldX = (midX - rect.left - pan.x) / prevZoom;
           const mouseWorldY = (midY - rect.top - pan.y) / prevZoom;
           
-          setPan({
-            x: midX - rect.left - mouseWorldX * nextZoom,
-            y: midY - rect.top - mouseWorldY * nextZoom,
-          });
+          const targetPanX = midX - rect.left - mouseWorldX * nextZoom;
+          const targetPanY = midY - rect.top - mouseWorldY * nextZoom;
+
+          setPan(clampPan(targetPanX, targetPanY, nextZoom));
           return nextZoom;
         });
       }
@@ -415,7 +503,7 @@ export default function Canvas({
     if (isPanning && lastPanPosRef.current) {
       const dx = screenX - lastPanPosRef.current.x;
       const dy = screenY - lastPanPosRef.current.y;
-      setPan((prev) => ({ x: prev.x + dx, y: prev.y + dy }));
+      setPan((prev) => clampPan(prev.x + dx, prev.y + dy, zoom));
       lastPanPosRef.current = { x: screenX, y: screenY };
       return;
     }
@@ -534,7 +622,7 @@ export default function Canvas({
   return (
     <div
       ref={containerRef}
-      className="no-scroll-touch relative w-full h-full flex items-center justify-center bg-slate-900 overflow-hidden"
+      className="no-scroll-touch relative w-full h-full flex items-center justify-center bg-slate-100 overflow-hidden"
       style={{
         touchAction: "none",
         overscrollBehavior: "none",
@@ -549,7 +637,7 @@ export default function Canvas({
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerCancel}
         onContextMenu={handleContextMenu}
-        className="no-scroll-touch absolute top-0 left-0 w-full h-full cursor-crosshair z-10"
+        className="no-scroll-touch absolute top-0 left-0 w-full h-full cursor-crosshair z-10 bg-white shadow-inner"
         style={{
           touchAction: "none",
           overscrollBehavior: "none",
