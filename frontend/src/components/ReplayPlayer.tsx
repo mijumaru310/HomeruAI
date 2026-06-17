@@ -110,23 +110,25 @@ export default function ReplayPlayer({
 
       setCurrentTime((prevTime) => {
         const nextTime = prevTime + delta * speed;
-        if (nextTime >= totalDuration) {
-          setIsPlaying(false);
-          setIsReplaying(false);
-          if (animationFrameRef.current) {
-            cancelAnimationFrame(animationFrameRef.current);
-          }
-          return totalDuration;
-        }
-        return nextTime;
+        return Math.min(nextTime, totalDuration);
       });
 
       if (isPlaying) {
         animationFrameRef.current = requestAnimationFrame(animate);
       }
     },
-    [isPlaying, speed, totalDuration, setIsReplaying]
+    [isPlaying, speed, totalDuration]
   );
+
+  useEffect(() => {
+    if (isPlaying && currentTime >= totalDuration && totalDuration > 0) {
+      setIsPlaying(false);
+      setIsReplaying(false);
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+      }
+    }
+  }, [currentTime, totalDuration, isPlaying, setIsReplaying]);
 
   useEffect(() => {
     if (isPlaying) {

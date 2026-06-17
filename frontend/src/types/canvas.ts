@@ -7,7 +7,7 @@ export interface Point {
 
 export interface Stroke {
   strokeId: string;
-  type: "draw" | "erase";
+  type: "draw" | "erase" | "pixel-erase";
   startTime: number; // absolute timestamp (ms)
   endTime: number;   // absolute timestamp (ms)
   points: Point[];
@@ -16,4 +16,29 @@ export interface Stroke {
   isErased?: boolean; // Logical deletion flag
   erasedAt?: number;  // Timestamp when it was erased
   targetStrokeIds?: string[]; // If type: "erase", records which stroke IDs this erase stroke deleted
+}
+
+export interface CanvasImage {
+  id: string;
+  url: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  name: string;
+  rotation?: number;
+}
+
+export interface CanvasText {
+  id: string;
+  text: string;
+  x: number;
+  y: number;
+  fontSize: number;
+  color: string;
+  fontWeight: "normal" | "bold";
+  fontStyle: "normal" | "italic";
+  textDecoration: "none" | "underline";
+  width?: number;
+  height?: number;
 }
