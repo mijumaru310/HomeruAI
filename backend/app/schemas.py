@@ -19,6 +19,11 @@ class StrokeSchema(BaseModel):
     erasedAt: Optional[int] = None
     targetStrokeIds: Optional[List[str]] = None
 
+class CanvasMark(BaseModel):
+    type: str = Field(..., description="'circle' for correct points, 'line' or 'cross' for mistakes")
+    box_2d: List[int] = Field(..., description="[ymin, xmin, ymax, xmax] in 0-1000 normalized coordinates indicating the bounding box of the target area")
+    comment: Optional[str] = Field(None, description="Short text to place near the mark")
+
 class AnalysisRequest(BaseModel):
     questionId: str
     strokes: List[StrokeSchema]
@@ -32,3 +37,4 @@ class AnalysisResponse(BaseModel):
     praise_points: List[str] = Field(..., description="方針の正しさや粘り強さなどの具体的な褒めポイント（2〜3個）")
     hint: str = Field(..., description="計算ミスなどがあれば、答えを直接言わずに気づきを促す優しいヒント")
     thinker_type: str = Field(..., description="例：開拓者タイプ、粘り強さの職人、などのキャッチーな称号")
+    canvas_marks: List[CanvasMark] = Field(default_factory=list, description="List of marks to draw on the canvas. Use [ymin, xmin, ymax, xmax] in 0-1000 scale.")

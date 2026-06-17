@@ -442,6 +442,61 @@ export default function Home() {
 
       const result = await response.json();
       setAiAnalysisResult(result);
+
+      if (result.canvas_marks && Array.isArray(result.canvas_marks)) {
+         const newStrokes: Stroke[] = [];
+         const newTexts: CanvasText[] = [];
+         
+         result.canvas_marks.forEach((mark: any, i: number) => {
+            const [ymin, xmin, ymax, xmax] = mark.box_2d;
+            
+            // [0-1000] をキャンバスのワールド座標に変換
+            const x1 = (xmin / 1000) * dims.width;
+            const y1 = (ymin / 1000) * dims.height;
+            const x2 = (xmax / 1000) * dims.width;
+            const y2 = (ymax / 1000) * dims.height;
+            
+            const cx = (x1 + x2) / 2;
+            const cy = (y1 + y2) / 2;
+            const rx = Math.max(Math.abs(x2 - x1) / 2, 20); // 最小半径20
+            const ry = Math.max(Math.abs(y2 - y1) / 2, 20);
+            
+            if (mark.type === "circle") {
+               const points = [];
+               for (let j = 0; j <= 36; j++) {
+                  const theta = (j / 36) * 2 * Math.PI;
+                  points.push({ x: cx + rx * Math.cos(theta), y: cy + ry * Math.sin(theta), p: 1.0, t: j * 10 });
+               }
+               newStrokes.push({ strokeId: `ai_mark_stroke_${Date.now()}_${i}`, type: "draw", startTime: Date.now(), endTime: Date.now() + 360, points, color: "#e81123", width: 4, isErased: false });
+            } else if (mark.type === "line" || mark.type === "cross") {
+               // 波線（ジグザグ）を描画
+               const points = [];
+               for (let j = 0; j <= 10; j++) {
+                  const px = x1 + (x2 - x1) * (j / 10);
+                  const py = y2 + 10 + (j % 2 === 0 ? 5 : -5); // ボックスの下にジグザグ
+                  points.push({ x: px, y: py, p: 1.0, t: j * 20 });
+               }
+               newStrokes.push({ strokeId: `ai_mark_stroke_${Date.now()}_${i}`, type: "draw", startTime: Date.now(), endTime: Date.now() + 200, points, color: "#e81123", width: 4, isErased: false });
+            }
+            
+            if (mark.comment) {
+               newTexts.push({
+                  id: `ai_mark_text_${Date.now()}_${i}`,
+                  text: mark.comment,
+                  x: x2 + 10,
+                  y: Math.max(y1, 20),
+                  fontSize: 24,
+                  color: "#e81123",
+                  fontWeight: "bold",
+                  fontStyle: "normal",
+                  textDecoration: "none"
+               });
+            }
+         });
+         
+         if (newStrokes.length > 0) setStrokesForActivePage(prev => [...prev, ...newStrokes]);
+         if (newTexts.length > 0) setTextsForActivePage(prev => [...prev, ...newTexts]);
+      }
     } catch (error) {
       console.warn("FastAPI connection failed. Using mock fallback.", error);
       await new Promise(resolve => setTimeout(resolve, 1500));
