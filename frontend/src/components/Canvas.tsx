@@ -8,11 +8,13 @@ import { Pan } from "../hooks/useCanvasTransform";
 interface CanvasProps {
   strokes: Stroke[];
   setStrokes: React.Dispatch<React.SetStateAction<Stroke[]>>;
-  tool: "pen" | "eraser";
+  tool: "pen" | "eraser" | "select";
   brushColor: string;
   brushWidth: number;
   eraserWidth: number;
   bgImageUrl: string | null;
+  bgImageOffset: { x: number; y: number };
+  setBgImageOffset: (offset: { x: number; y: number }) => void;
   isReplaying: boolean;
   pan: Pan;
   setPan: React.Dispatch<React.SetStateAction<Pan>>;
@@ -29,6 +31,8 @@ export default function Canvas({
   brushWidth,
   eraserWidth,
   bgImageUrl,
+  bgImageOffset,
+  setBgImageOffset,
   isReplaying,
   pan,
   setPan,
@@ -42,7 +46,9 @@ export default function Canvas({
   // キャンバスのリアルタイムピクセルサイズ
   const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
   const [isDrawing, setIsDrawing] = useState(false);
-  const [currentStroke, setCurrentStroke] = useState<Stroke | null>(null);
+  
+  // 手書きのチラつき防止用：currentStroke をステートではなく Ref で管理
+  const currentStrokeRef = useRef<Stroke | null>(null);
   
   // マウス/ペン位置（消しゴムガイド表示などのためスクリーン座標）
   const [pointerPos, setPointerPos] = useState<{ x: number; y: number } | null>(null);
@@ -59,6 +65,11 @@ export default function Canvas({
   const [isPanning, setIsPanning] = useState(false);
   const lastPanPosRef = useRef<{ x: number; y: number } | null>(null);
   const spacePressedRef = useRef(false);
+
+  // 選択ツール用：背景画像のドラッグ移動判定
+  const isDraggingImageRef = useRef(false);
+  const dragStartWorldPosRef = useRef<{ x: number; y: number } | null>(null);
+  const dragStartOffsetRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
 
   // スクリーン座標からワールド（無限キャンバス）座標への変換
   const screenToWorld = useCallback((screenX: number, screenY: number, rect: DOMRect) => {
@@ -78,7 +89,7 @@ export default function Canvas({
       return;
     }
     
-    // すでにロード済みの画像と同一のURLならリロード（クリア）を行わない
+    // すでにロード済みの画像と同一のURLならリロードを行わない
     if (loadedBgUrlRef.current === bgImageUrl) {
       return;
     }
@@ -105,10 +116,12 @@ export default function Canvas({
 
     let hasContent = false;
 
-    // 背景画像がある場合
+    // 背景画像がある場合 (移動オフセットを考慮)
     if (bgImage) {
-      maxX = bgImage.width;
-      maxY = bgImage.height;
+      minX = Math.min(minX, bgImageOffset.x);
+      minY = Math.min(minY, bgImageOffset.y);
+      maxX = Math.max(maxX, bgImageOffset.x + bgImage.width);
+      maxY = Math.max(maxY, bgImageOffset.y + bgImage.height);
       hasContent = true;
     }
 
@@ -139,9 +152,9 @@ export default function Canvas({
     }
 
     return { minX, minY, maxX, maxY };
-  }, [strokes, bgImage, dimensions]);
+  }, [strokes, bgImage, bgImageOffset, dimensions]);
 
-  // パン位置をクランプ (Appleメモアプリのように、書いた範囲＋マージンでのみスクロール可能にする)
+  // パン位置をクランプ (ズームアウト時に画像が吹き飛ぶのをセンタリングで防ぐ)
   const clampPan = useCallback(
     (targetPanX: number, targetPanY: number, currentZoom: number) => {
       if (dimensions.width === 0 || dimensions.height === 0) {
@@ -164,8 +177,21 @@ export default function Canvas({
       const minPanY = dimensions.height - contentMaxY * currentZoom;
       const maxPanY = -contentMinY * currentZoom;
 
-      const clampedX = Math.min(Math.max(targetPanX, Math.min(minPanX, maxPanX)), Math.max(minPanX, maxPanX));
-      const clampedY = Math.min(Math.max(targetPanY, Math.min(minPanY, maxPanY)), Math.max(minPanY, maxPanY));
+      let clampedX = targetPanX;
+      if (minPanX <= maxPanX) {
+        clampedX = Math.min(Math.max(targetPanX, minPanX), maxPanX);
+      } else {
+        // コンテンツ幅が画面幅より小さい場合は、中央にセンタリングする
+        clampedX = (dimensions.width - (bounds.maxX + bounds.minX) * currentZoom) / 2;
+      }
+
+      let clampedY = targetPanY;
+      if (minPanY <= maxPanY) {
+        clampedY = Math.min(Math.max(targetPanY, minPanY), maxPanY);
+      } else {
+        // コンテンツ高さが画面高さより小さい場合は、中央にセンタリングする
+        clampedY = (dimensions.height - (bounds.maxY + bounds.minY) * currentZoom) / 2;
+      }
 
       return { x: clampedX, y: clampedY };
     },
@@ -192,7 +218,6 @@ export default function Canvas({
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.code === "Space") {
         spacePressedRef.current = true;
-        // スペースキーによるブラウザデフォルトのスクロールを防止
         if (e.target === document.body || e.target === canvasRef.current) {
           e.preventDefault();
         }
@@ -212,25 +237,23 @@ export default function Canvas({
     };
   }, []);
 
-  // マウスホイールによるズーム (キャンバス要素へ直接passive: falseでアタッチ)
+  // マウスホイールによるズーム
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
     const handleWheel = (e: WheelEvent) => {
-      e.preventDefault(); // 画面全体のスクロール・ズームを防ぐ
+      e.preventDefault();
 
       const rect = canvas.getBoundingClientRect();
       const clientX = e.clientX;
       const clientY = e.clientY;
-
-      // ズーム感度の設定
       const zoomFactor = 1 - e.deltaY * 0.001;
       
       setZoom((prevZoom) => {
         const nextZoom = Math.max(0.1, Math.min(10, prevZoom * zoomFactor));
         
-        // カーソル位置を基準（ピボット）としてズームするようパンを再計算
+        // カーsor位置をピボットとしてズーム
         const mouseWorldX = (clientX - rect.left - pan.x) / prevZoom;
         const mouseWorldY = (clientY - rect.top - pan.y) / prevZoom;
 
@@ -249,7 +272,7 @@ export default function Canvas({
     };
   }, [pan, setPan, setZoom, clampPan]);
 
-  // 描画処理
+  // 描画メイン処理
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas || dimensions.width === 0) return;
@@ -261,25 +284,20 @@ export default function Canvas({
 
     // 1. 無限方眼グリッドの描画 (パン・ズームに追従)
     ctx.save();
-    ctx.strokeStyle = "rgba(0, 0, 0, 0.06)"; // 白紙に合う薄いグレー
+    ctx.strokeStyle = "rgba(0, 0, 0, 0.05)"; // 白紙に合う薄いグレーのグリッド
     ctx.lineWidth = 1;
     
-    // グリッド線の間隔 (ワールド座標系で50pxごと)
     const gridSize = 50;
-    
-    // 現在の画面に表示されているワールド座標の範囲を逆算
     const left = -pan.x / zoom;
     const top = -pan.y / zoom;
     const right = (dimensions.width - pan.x) / zoom;
     const bottom = (dimensions.height - pan.y) / zoom;
 
-    // グリッド描画の開始・終了インデックス
     const startX = Math.floor(left / gridSize) * gridSize;
     const endX = Math.ceil(right / gridSize) * gridSize;
     const startY = Math.floor(top / gridSize) * gridSize;
     const endY = Math.ceil(bottom / gridSize) * gridSize;
 
-    // 2Dトランスフォームを適用してグリッドを描く
     ctx.setTransform(zoom, 0, 0, zoom, pan.x, pan.y);
 
     ctx.beginPath();
@@ -293,8 +311,8 @@ export default function Canvas({
     }
     ctx.stroke();
     
-    // ワールドの原点 (0,0) を示す薄い十字軸（白紙時のガイド用）
-    ctx.strokeStyle = "rgba(99, 102, 241, 0.25)";
+    // ワールドの原点 (0,0) を示す薄いOneNote紫の十字軸
+    ctx.strokeStyle = "rgba(92, 45, 145, 0.15)";
     ctx.lineWidth = 1.5;
     ctx.beginPath();
     ctx.moveTo(startX, 0);
@@ -304,13 +322,23 @@ export default function Canvas({
     ctx.stroke();
     ctx.restore();
 
-    // 2. パン・ズーム変換の適用（コンテンツの描画用）
+    // 2. パン・ズーム変換の適用（コンテンツ描画）
     ctx.save();
     ctx.setTransform(zoom, 0, 0, zoom, pan.x, pan.y);
 
-    // 背景画像 (問題画像) を (0,0) 基準に等倍で描画
+    // 背景画像を描画 (オフセット位置を考慮)
     if (bgImage) {
-      ctx.drawImage(bgImage, 0, 0);
+      ctx.drawImage(bgImage, bgImageOffset.x, bgImageOffset.y);
+      
+      // 選択ツールが有効でかつ画像がある場合、選択枠をうっすら描く
+      if (tool === "select") {
+        ctx.save();
+        ctx.strokeStyle = "rgba(92, 45, 145, 0.5)";
+        ctx.lineWidth = 1.5 / zoom;
+        ctx.setLineDash([5 / zoom, 5 / zoom]);
+        ctx.strokeRect(bgImageOffset.x, bgImageOffset.y, bgImage.width, bgImage.height);
+        ctx.restore();
+      }
     }
 
     // 保存されているストロークを描画
@@ -338,9 +366,10 @@ export default function Canvas({
       ctx.fill();
     });
 
-    // 現在描画中のストロークを描画 (ペンツールのみ)
-    if (currentStroke && currentStroke.type === "draw" && currentStroke.points.length > 0) {
-      const strokePoints = currentStroke.points.map((p) => [p.x, p.y, p.p]);
+    // 現在描画中のストロークを Ref から直接描画 (ペンツールのみ、チラつき防止)
+    const curStroke = currentStrokeRef.current;
+    if (curStroke && curStroke.type === "draw" && curStroke.points.length > 0) {
+      const strokePoints = curStroke.points.map((p) => [p.x, p.y, p.p]);
       const options = {
         size: brushWidth,
         thinning: 0.5,
@@ -363,8 +392,7 @@ export default function Canvas({
     
     ctx.restore();
 
-    // 3. 物理スクリーン座標での装飾描画（ズームの影響を受けないHUD等）
-    // 消しゴムツール使用時のガイドライン（円）を表示
+    // 3. 物理スクリーン座標での装飾（HUD等）
     if (tool === "eraser" && pointerPos && !isReplaying && !isPanning) {
       ctx.save();
       ctx.beginPath();
@@ -376,9 +404,9 @@ export default function Canvas({
       ctx.stroke();
       ctx.restore();
     }
-  }, [strokes, currentStroke, tool, pointerPos, eraserWidth, brushColor, brushWidth, isReplaying, pan, zoom, dimensions, bgImage, isPanning]);
+  }, [strokes, tool, pointerPos, eraserWidth, brushColor, brushWidth, isReplaying, pan, zoom, dimensions, bgImage, bgImageOffset, isPanning]);
 
-  // strokes, transform 等の変化時に再描画
+  // strokes などのステート変化時にキャンバスを描画
   useEffect(() => {
     draw();
   }, [draw]);
@@ -396,16 +424,14 @@ export default function Canvas({
     const screenX = e.clientX;
     const screenY = e.clientY;
     
-    // タッチデバイスでのジェスチャー操作 (指でのマルチタッチ)
+    // タッチデバイスでの指によるマルチタッチ制御
     if (e.pointerType === "touch") {
       activePointersRef.current.set(e.pointerId, { clientX: screenX, clientY: screenY });
       
       if (activePointersRef.current.size === 1) {
-        // 1本指タッチはスクロール（パン）の開始
         setIsPanning(true);
         lastPanPosRef.current = { x: screenX, y: screenY };
       } else if (activePointersRef.current.size === 2) {
-        // 2本指タッチはピンチズームの開始
         setIsPanning(false);
         const pts = Array.from(activePointersRef.current.values());
         const d = Math.sqrt(Math.pow(pts[0].clientX - pts[1].clientX, 2) + Math.pow(pts[0].clientY - pts[1].clientY, 2));
@@ -415,8 +441,22 @@ export default function Canvas({
       return;
     }
 
-    // PCでの右クリックドラッグ または スペースキー押しながらの左ドラッグはパンとして処理
-    const isPcPan = e.pointerType === "mouse" && (e.button === 2 || e.buttons === 2 || spacePressedRef.current);
+    // 選択ツールで画像をドラッグ移動する場合
+    if (tool === "select" && bgImage) {
+      const worldPos = screenToWorld(screenX, screenY, rect);
+      const inX = worldPos.x >= bgImageOffset.x && worldPos.x <= bgImageOffset.x + bgImage.width;
+      const inY = worldPos.y >= bgImageOffset.y && worldPos.y <= bgImageOffset.y + bgImage.height;
+      if (inX && inY) {
+        isDraggingImageRef.current = true;
+        dragStartWorldPosRef.current = worldPos;
+        dragStartOffsetRef.current = { ...bgImageOffset };
+        e.preventDefault();
+        return;
+      }
+    }
+
+    // PCでのスクロール (右クリックドラッグ、スペースキー＋ドラッグ、または選択ツールで空欄ドラッグ)
+    const isPcPan = e.pointerType === "mouse" && (e.button === 2 || e.buttons === 2 || spacePressedRef.current || tool === "select");
     if (isPcPan) {
       setIsPanning(true);
       lastPanPosRef.current = { x: screenX, y: screenY };
@@ -424,8 +464,8 @@ export default function Canvas({
       return;
     }
 
-    // それ以外 (Apple Pencil 描画、または通常のマウス左クリック描画)
-    if (e.button === 0) { // 左ボタンのみ
+    // 手書き描画 (ペン・消しゴム)
+    if (e.button === 0 && tool !== "select") { 
       setIsDrawing(true);
       const worldPos = screenToWorld(screenX, screenY, rect);
       const pressure = e.pointerType === "pen" ? e.pressure : 0.5;
@@ -442,12 +482,15 @@ export default function Canvas({
         targetStrokeIds: tool === "eraser" ? [] : undefined,
       };
 
-      setCurrentStroke(newStroke);
+      currentStrokeRef.current = newStroke;
       setPointerPos({ x: screenX - rect.left, y: screenY - rect.top });
 
       if (tool === "eraser") {
         performObjectErasing(worldPos, newStroke);
       }
+      
+      // 直接再描画を呼び出す (点滅防止)
+      draw();
     }
   };
 
@@ -458,33 +501,26 @@ export default function Canvas({
     const screenX = e.clientX;
     const screenY = e.clientY;
 
-    // 現在のHUD表示用座標の更新
     setPointerPos({ x: screenX - rect.left, y: screenY - rect.top });
 
-    // 指でのパン＆ズーム処理
+    // 指でのパン＆ズーム
     if (e.pointerType === "touch" && activePointersRef.current.has(e.pointerId)) {
       activePointersRef.current.set(e.pointerId, { clientX: screenX, clientY: screenY });
 
       if (activePointersRef.current.size === 1 && isPanning && lastPanPosRef.current) {
-        // 1本指パン
         const dx = screenX - lastPanPosRef.current.x;
         const dy = screenY - lastPanPosRef.current.y;
         setPan((prev) => clampPan(prev.x + dx, prev.y + dy, zoom));
         lastPanPosRef.current = { x: screenX, y: screenY };
       } else if (activePointersRef.current.size === 2 && pinchStartDistanceRef.current && pinchStartZoomRef.current !== null) {
-        // 2本指ピンチズーム & パン
         const pts = Array.from(activePointersRef.current.values());
         const currentDist = Math.sqrt(Math.pow(pts[0].clientX - pts[1].clientX, 2) + Math.pow(pts[0].clientY - pts[1].clientY, 2));
         
-        // ズーム倍率の計算
         const zoomFactor = currentDist / pinchStartDistanceRef.current;
         const nextZoom = Math.max(0.1, Math.min(10, pinchStartZoomRef.current * zoomFactor));
-
-        // 2点の中点 (ピボット)
         const midX = (pts[0].clientX + pts[1].clientX) / 2;
         const midY = (pts[0].clientY + pts[1].clientY) / 2;
 
-        // ピボット基準のズームとパン
         setZoom((prevZoom) => {
           const mouseWorldX = (midX - rect.left - pan.x) / prevZoom;
           const mouseWorldY = (midY - rect.top - pan.y) / prevZoom;
@@ -499,7 +535,20 @@ export default function Canvas({
       return;
     }
 
-    // PC用ドラッグによるパン処理
+    // 選択ツール：画像の移動処理
+    if (tool === "select" && isDraggingImageRef.current && dragStartWorldPosRef.current) {
+      const worldPos = screenToWorld(screenX, screenY, rect);
+      const dx = worldPos.x - dragStartWorldPosRef.current.x;
+      const dy = worldPos.y - dragStartWorldPosRef.current.y;
+      
+      const newOffsetX = dragStartOffsetRef.current.x + dx;
+      const newOffsetY = dragStartOffsetRef.current.y + dy;
+      
+      setBgImageOffset({ x: newOffsetX, y: newOffsetY });
+      return;
+    }
+
+    // PCドラッグによるパン
     if (isPanning && lastPanPosRef.current) {
       const dx = screenX - lastPanPosRef.current.x;
       const dy = screenY - lastPanPosRef.current.y;
@@ -508,24 +557,22 @@ export default function Canvas({
       return;
     }
 
-    // ペン/マウス描画処理
-    if (!isDrawing || !currentStroke || isReplaying) return;
+    // ペン/マウス手書き処理
+    if (!isDrawing || !currentStrokeRef.current || isReplaying) return;
 
     const worldPos = screenToWorld(screenX, screenY, rect);
     const pressure = e.pointerType === "pen" ? e.pressure : 0.5;
-    const elapsed = Date.now() - currentStroke.startTime;
+    const elapsed = Date.now() - currentStrokeRef.current.startTime;
 
     const newPoint: Point = { x: worldPos.x, y: worldPos.y, p: pressure, t: elapsed };
-    const updatedStroke = {
-      ...currentStroke,
-      points: [...currentStroke.points, newPoint],
-    };
-
-    setCurrentStroke(updatedStroke);
+    currentStrokeRef.current.points.push(newPoint);
 
     if (tool === "eraser") {
-      performObjectErasing(worldPos, updatedStroke);
+      performObjectErasing(worldPos, currentStrokeRef.current);
     }
+    
+    // 直接再描画を呼び出す (React再レンダー遅延によるチラつきを防ぐ)
+    draw();
   };
 
   const handlePointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
@@ -547,23 +594,30 @@ export default function Canvas({
       return;
     }
 
+    if (isDraggingImageRef.current) {
+      isDraggingImageRef.current = false;
+      dragStartWorldPosRef.current = null;
+      return;
+    }
+
     if (isPanning) {
       setIsPanning(false);
       lastPanPosRef.current = null;
       return;
     }
 
-    if (!isDrawing || !currentStroke || isReplaying) return;
+    // 手書き描画の確定
+    if (!isDrawing || !currentStrokeRef.current || isReplaying) return;
 
-    const now = Date.now();
     const finalStroke: Stroke = {
-      ...currentStroke,
-      endTime: now,
+      ...currentStrokeRef.current,
+      endTime: Date.now(),
     };
 
     setStrokes((prev) => [...prev, finalStroke]);
     setIsDrawing(false);
-    setCurrentStroke(null);
+    currentStrokeRef.current = null;
+    draw();
   };
 
   const handlePointerCancel = (e: React.PointerEvent<HTMLCanvasElement>) => {
@@ -572,20 +626,18 @@ export default function Canvas({
     }
     setIsDrawing(false);
     setIsPanning(false);
-    setCurrentStroke(null);
+    isDraggingImageRef.current = false;
+    currentStrokeRef.current = null;
     lastPanPosRef.current = null;
+    draw();
   };
 
-  // 右クリックメニューの無効化 (PC用パン操作と競合するため)
   const handleContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
   };
 
-  // ワールド座標系でのオブジェクト消しゴム判定
+  // ワールド座標系での消しゴム判定
   const performObjectErasing = (worldPos: { x: number; y: number }, activeEraserStroke: Stroke) => {
-    // ズームに応じたワールド座標系での消しゴムサイズ閾値
-    // ズームアウトしているほど、画面上の消しゴムの見かけの物理サイズは大きくなるため
-    // ワールド座標系では (eraserWidth / 2) / zoom に比例させる
     const worldThreshold = (eraserWidth / 2) / zoom + 10;
     
     const getDistance = (p1: { x: number; y: number }, p2: { x: number; y: number }) => {
@@ -596,7 +648,6 @@ export default function Canvas({
       const newStrokes = prevStrokes.map((stroke) => {
         if (stroke.type !== "draw" || stroke.isErased) return stroke;
 
-        // ワールド座標同士での近接判定
         const isClose = stroke.points.some(
           (point) => getDistance(worldPos, point) < worldThreshold
         );
@@ -637,7 +688,7 @@ export default function Canvas({
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerCancel}
         onContextMenu={handleContextMenu}
-        className="no-scroll-touch absolute top-0 left-0 w-full h-full cursor-crosshair z-10 bg-white shadow-inner"
+        className={`no-scroll-touch absolute top-0 left-0 w-full h-full z-10 bg-white shadow-inner ${tool === "select" ? "cursor-move" : "cursor-crosshair"}`}
         style={{
           touchAction: "none",
           overscrollBehavior: "none",
