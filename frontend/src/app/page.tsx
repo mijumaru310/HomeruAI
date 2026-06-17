@@ -10,6 +10,7 @@ import {
   Lightbulb, Award, Upload, FileText, Maximize2, Plus, Eye, EyeOff, Move,
   Type, Scissors, Download, Bold, Italic, Underline, ImagePlus
 } from "lucide-react";
+import { generateGhostRender } from "../utils/ghostRenderer";
 
 interface PageData {
   id: string;
@@ -404,6 +405,11 @@ export default function Home() {
       const bgImage = activePage.images.length > 0 ? activePage.images[0].url : null;
       const bgImageSize = activePage.images.length > 0 ? { width: activePage.images[0].width, height: activePage.images[0].height } : null;
 
+      const canvasEl = document.getElementById("homeruai-canvas") as HTMLCanvasElement;
+      const dims = canvasEl ? { width: canvasEl.width, height: canvasEl.height } : { width: 1920, height: 1080 };
+      
+      const b64Image = await generateGhostRender(activePage.strokes, dims, bgImage);
+
       const response = await fetch("http://localhost:8000/api/analyze", {
         method: "POST",
         headers: {
@@ -423,6 +429,7 @@ export default function Home() {
             erasedAt: s.erasedAt,
             targetStrokeIds: s.targetStrokeIds
           })),
+          image: b64Image,
           backgroundImage: bgImage,
           imageWidth: bgImageSize?.width,
           imageHeight: bgImageSize?.height
@@ -439,8 +446,10 @@ export default function Home() {
       console.warn("FastAPI connection failed. Using mock fallback.", error);
       await new Promise(resolve => setTimeout(resolve, 1500));
       setAiAnalysisResult({
-        ...mockAiFeedback,
-        "総合評価": `${mockAiFeedback["総合評価"]} (※ローカルバックエンドAPI接続エラーのため、デモ用モックデータを表示しています。開発サーバー http://localhost:8000 を起動し、必要であれば.envにAPIキーを設定してください)`
+        overall_comment: `${mockAiFeedback["総合評価"]} (※API接続エラーのためモックデータを表示しています)`,
+        praise_points: mockAiFeedback["プロセスへの称賛ポイント"],
+        hint: mockAiFeedback["惜しい点（ヒント）"],
+        thinker_type: mockAiFeedback["思考タイプラベル"]
       });
     } finally {
       setIsAnalyzing(false);
@@ -486,16 +495,50 @@ export default function Home() {
             <input type="text" value={activePage.title} onChange={e => updateActivePage(p => ({ ...p, title: e.target.value }))} className="canvas-title-input" placeholder="無題のページ" />
             <div className="canvas-date-label">{activePage.date}</div>
           </div>
-          <div className="canvas-body">
-            <Canvas
-              key={activePageId}
-              strokes={isReplaying ? replayedStrokes : activePage.strokes} setStrokes={setStrokesForActivePage}
-              images={activePage.images} setImages={setImagesForActivePage}
-              texts={activePage.texts} setTexts={setTextsForActivePage}
-              tool={tool} eraserMode={eraserMode} brushColor={brushColor} brushWidth={brushWidth} eraserWidth={eraserWidth} textStyle={textStyle}
-              isReplaying={isReplaying} initialPan={pageTransformsRef.current[activePageId]?.pan || { x: 0, y: 0 }} initialZoom={pageTransformsRef.current[activePageId]?.zoom || 1}
-              onTransformChange={(newPan, newZoom) => { pageTransformsRef.current[activePageId] = { pan: newPan, zoom: newZoom }; setDisplayZoom(newZoom); }}
-            />
+          <div className="canvas-body" style={{ display: "flex", flexDirection: "row", width: "100%", height: "100%", overflow: "hidden" }}>
+            <div style={{ flex: 1, position: "relative" }}>
+              <Canvas
+                key={activePageId}
+                strokes={isReplaying ? replayedStrokes : activePage.strokes} setStrokes={setStrokesForActivePage}
+                images={activePage.images} setImages={setImagesForActivePage}
+                texts={activePage.texts} setTexts={setTextsForActivePage}
+                tool={tool} eraserMode={eraserMode} brushColor={brushColor} brushWidth={brushWidth} eraserWidth={eraserWidth} textStyle={textStyle}
+                isReplaying={isReplaying} initialPan={pageTransformsRef.current[activePageId]?.pan || { x: 0, y: 0 }} initialZoom={pageTransformsRef.current[activePageId]?.zoom || 1}
+                onTransformChange={(newPan, newZoom) => { pageTransformsRef.current[activePageId] = { pan: newPan, zoom: newZoom }; setDisplayZoom(newZoom); }}
+              />
+            </div>
+            {aiAnalysisResult && (
+              <div style={{ width: "340px", borderLeft: "1px solid #e1dfdd", backgroundColor: "#fdfdfd", padding: "20px", overflowY: "auto", boxShadow: "-4px 0 12px rgba(0,0,0,0.05)", zIndex: 10 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" }}>
+                  <h2 style={{ fontSize: "16px", color: "#5c2d91", fontWeight: "bold", margin: 0, display: "flex", alignItems: "center", gap: "6px" }}><Sparkles size={18}/> AI フィードバック</h2>
+                  <button onClick={() => setAiAnalysisResult(null)} style={{ border: "none", background: "none", cursor: "pointer", fontSize: "20px", color: "#605e5c" }}>&times;</button>
+                </div>
+                
+                <div style={{ marginBottom: "20px", padding: "16px", backgroundColor: "#fff4ce", borderRadius: "12px", border: "1px solid #fde7a9", display: "flex", flexDirection: "column", alignItems: "center" }}>
+                  <div style={{ fontSize: "12px", color: "#795f0c", fontWeight: "bold", marginBottom: "8px" }}>思考タイプ</div>
+                  <div style={{ fontSize: "18px", color: "#a80000", fontWeight: "bold", textAlign: "center", display: "flex", alignItems: "center", gap: "8px" }}><Award size={20}/>{aiAnalysisResult.thinker_type || aiAnalysisResult["思考タイプラベル"]}</div>
+                </div>
+
+                <div style={{ marginBottom: "20px" }}>
+                  <div style={{ fontSize: "14px", fontWeight: "bold", color: "#323130", marginBottom: "8px" }}>全体評価</div>
+                  <p style={{ fontSize: "14px", color: "#605e5c", lineHeight: "1.6", margin: 0 }}>{aiAnalysisResult.overall_comment || aiAnalysisResult["総合評価"]}</p>
+                </div>
+
+                <div style={{ marginBottom: "20px" }}>
+                  <div style={{ fontSize: "14px", fontWeight: "bold", color: "#323130", marginBottom: "8px" }}>素晴らしいポイント</div>
+                  <ul style={{ paddingLeft: "24px", margin: 0 }}>
+                    {(aiAnalysisResult.praise_points || aiAnalysisResult["プロセスへの称賛ポイント"] || []).map((pt: string, i: number) => (
+                      <li key={i} style={{ fontSize: "14px", color: "#605e5c", marginBottom: "8px", lineHeight: "1.5" }}>{pt}</li>
+                    ))}
+                  </ul>
+                </div>
+
+                <div style={{ marginTop: "24px", padding: "16px", backgroundColor: "#e1dfdd", borderRadius: "12px" }}>
+                  <div style={{ fontSize: "14px", fontWeight: "bold", color: "#323130", marginBottom: "8px", display: "flex", alignItems: "center", gap: "6px" }}><Lightbulb size={16} color="#0078d4" /> ヒント・アドバイス</div>
+                  <p style={{ fontSize: "14px", color: "#605e5c", lineHeight: "1.6", margin: 0 }}>{aiAnalysisResult.hint || aiAnalysisResult["惜しい点_ヒント"] || aiAnalysisResult["惜しい点（ヒント）"]}</p>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </div>
