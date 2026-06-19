@@ -5,7 +5,7 @@ from typing import List
 from google import genai
 from google.genai import types
 
-from .schemas import StrokeSchema, AnalysisResponse
+from .schemas import StrokeSchema, AnalysisResponse, StepAnalysis
 from .config import GEMINI_API_KEY, QUESTION_METADATA
 
 def calculate_pauses(strokes: List[StrokeSchema]) -> List[dict]:
@@ -34,6 +34,42 @@ def calculate_pauses(strokes: List[StrokeSchema]) -> List[dict]:
             
     return pauses
 
+def build_stroke_sequence_text(strokes: List[StrokeSchema]) -> str:
+    """
+    ストロークの書き順（時系列）情報をテキスト化し、Geminiに学習者の解答手順を伝える。
+    """
+    draw_strokes = [s for s in strokes if s.type == "draw"]
+    sorted_strokes = sorted(draw_strokes, key=lambda s: s.startTime)
+    
+    if not sorted_strokes:
+        return "（描画ストロークなし）"
+    
+    base_time = sorted_strokes[0].startTime
+    lines = []
+    
+    for i, s in enumerate(sorted_strokes):
+        elapsed_sec = round((s.startTime - base_time) / 1000.0, 1)
+        duration_sec = round((s.endTime - s.startTime) / 1000.0, 1)
+        
+        # ストロークの大まかな位置と範囲を計算
+        if s.points:
+            xs = [p.x for p in s.points]
+            ys = [p.y for p in s.points]
+            min_x, max_x = min(xs), max(xs)
+            min_y, max_y = min(ys), max(ys)
+            extent = f"位置({int(min_x)},{int(min_y)})→({int(max_x)},{int(max_y)})"
+        else:
+            extent = "位置不明"
+        
+        erased_info = "【後に消去】" if s.isErased else ""
+        
+        lines.append(
+            f"  手順{i+1}: 開始{elapsed_sec}秒後, 筆記時間{duration_sec}秒, "
+            f"{extent}, 点数{len(s.points)} {erased_info}"
+        )
+    
+    return "\n".join(lines)
+
 def analyze_process(strokes: List[StrokeSchema], question_id: str, image_b64: str) -> AnalysisResponse:
     """
     フロントエンドで生成されたGhost Rendered画像（Base64）とメタデータ（停止時間）をGemini APIに送信し、
@@ -58,8 +94,11 @@ def analyze_process(strokes: List[StrokeSchema], question_id: str, image_b64: st
         pause_text = f"【検知された思考時間】\n{pause_details}"
     else:
         pause_text = "【検知された思考時間】\n目立った長時間の思考停止（10秒以上）は検知されず、比較的スムーズに筆記が進められました。"
-        
-    # 4. プロンプトの構築
+    
+    # 4. ストロークの書き順情報をテキスト化
+    stroke_sequence = build_stroke_sequence_text(strokes)
+    
+    # 5. プロンプトの構築
     prompt = f"""
 【対象の問題情報】
 問題タイトル: {q_meta['title']}
@@ -70,21 +109,68 @@ def analyze_process(strokes: List[StrokeSchema], question_id: str, image_b64: st
 
 {pause_text}
 
-【AI分析への必須指示】
-1. 画像中の「黒色の線」だけでなく、「半透明の赤色の線（消した思考）」を非常に注意深く分析してください。
-2. 正解している素晴らしい数式や図の箇所には、box_2d座標を指定して `type: "circle"` の `canvas_marks` を出力してください。キャンバス上で正解に「花丸」や「丸」を付ける役割を果たします。
-3. 間違っている箇所やヒントを出したい箇所には、box_2d座標を指定して `type: "line"` の `canvas_marks` と共に、`comment` に簡潔なアドバイス（例：『ここを2で割る！』など、答えを直接言わない程度のヒント）を出力してください。
-4. 最終結果（黒色の線）が間違っていても、赤い線や途中のプロセスに「正しいアプローチの芽」があれば、その部分を具体的に抽出して褒めてください。
-5. 途中で手が止まった時間（思考時間メタデータ）があれば、それを「諦めずに粘り強く課題に立ち向かった時間」として称賛してください。
-6. 一度書いた線を消しゴムで消した行為（自己修正）を肯定的に評価してください。
-7. この学習者の筆記プロセスの特徴を総括する「思考タイプラベル」を決定してください。
+【学習者の筆記プロセス（時系列順）】
+以下は学習者がキャンバスに描いたストロークの時系列記録です。手順番号が若いほど先に描かれたものです。
+「後に消去」と記載のあるストロークは、学習者が一度書いた後に消しゴムで消した思考です。
+{stroke_sequence}
+
+【AI分析への必須指示 — canvas_marks（先生の丸付け）について】
+
+あなたは先生として、学習者のノートに赤ペンで直接書き込むように添削してください。
+以下の3種類の `type` を使い分けて、各問題の回答欄ごとに個別にマークを付けてください。
+
+■ `type: "circle"` （正解マーク ○）：
+  - 正しい答えが書かれた回答欄の答えの数値/式を囲むように使ってください。
+  - 各問題ごとに正解の場合は必ず○をつけてください。
+  - 「数学的に完全に正しい」答え・式にのみ使用。迷ったらつけない。
+  - `comment` には短い褒め言葉（「◎」「よくできました！」など）を入れてください。
+
+■ `type: "underline"` （間違い・注目箇所の下線）：
+  - 間違っている答えや計算ミスの箇所に赤い下線を引いてください。
+  - 各問題ごとに間違いがある場合は必ず下線をつけてください。
+  - `comment` には答えを直接言わない短いヒント（「÷2を忘れずに！」「分母をもう一度確認！」など）を書いてください。
+
+■ `type: "text"` （先生の赤ペン書き入れ）：
+  - 先生がノートの余白に赤ペンで書くように、添削コメントを直接画像上に配置してください。
+  - 例：「惜しい！」「ここまでOK！」「×→正解は○○」「計算の手順がいいね！」
+  - 正解の回答の近くに「◎」や「100点！」のような先生らしいコメントを書いてください。
+  - 間違いの近くには優しいヒントを書いてください。
+  - `comment` にテキスト内容を入れてください。
+
+■ 重要ルール：
+  - 画像内の全ての問題の回答欄を一つずつ確認し、正解なら circle、間違いなら underline と text で添削してください。
+  - `box_2d` は [ymin, xmin, ymax, xmax] 形式の 0-1000 スケール（問題画像全体に対する正規化座標）で指定。
+  - マークの座標は、対象の答え・式の位置をタイトに囲むように指定してください。
+  - 多くのマークを出力してください（各問題に最低1つのマーク）。
+
+【AI分析への必須指示 — 解答手順・方針の分析について】
+
+1. 上記の「筆記プロセス（時系列順）」と画像を照らし合わせ、学習者がどのような手順で問題に取り組んだかを再構築してください。
+
+2. `solving_approach` には、学習者の解法アプローチを1〜2文で要約してください。
+
+3. `step_analysis` には、学習者の解答プロセスを手順ごとに分解し、各ステップについて：
+   - `description`: 何を行ったか
+   - `is_correct`: そのステップが正しいか
+   - `observation`: 良い点や改善点の所見
+   を記述してください。消しゴムで消した手順も含めて分析してください。
+
+4. `strategy_evaluation` には、学習者の全体的な解法戦略を2〜3文で評価してください。
+
+【AI分析への必須指示 — プロセス称賛について】
+
+1. 画像中の「黒色の線」だけでなく、「半透明の赤色の線（消した思考）」を分析してください。
+2. 最終結果が間違っていても、途中プロセスの「正しいアプローチの芽」を褒めてください。
+3. 思考時間は「粘り強さ」として称賛してください。
+4. 消しゴムでの自己修正を肯定的に評価してください。
+5. 「思考タイプラベル」を決定してください。
 
 【レスポンス形式】
 必ず指定のJSONスキーマ（AnalysisResponse）に従って出力してください。日本語で回答してください。
-`box_2d` は [ymin, xmin, ymax, xmax] 形式の 0-1000 スケール（画像全体に対する正規化座標）で指定してください。
+`box_2d` は [ymin, xmin, ymax, xmax] 形式の 0-1000 スケール（問題画像全体に対する正規化座標）で指定してください。
 """
 
-    # 5. Gemini API キーのチェックと呼び出し
+    # 6. Gemini API キーのチェックと呼び出し
     if not GEMINI_API_KEY or GEMINI_API_KEY.strip() == "" or GEMINI_API_KEY == "your_gemini_api_key_here":
         print("Warning: GEMINI_API_KEY is not configured. Falling back to simulated local AI evaluation.")
         # モック/シミュレーション用の結果を返す
@@ -109,9 +195,16 @@ def analyze_process(strokes: List[StrokeSchema], question_id: str, image_b64: st
             hint="直角を挟む2つの辺の長さ（底辺と高さ）の掛け算と、最後の「2で割る」処理の計算をもう一度ゆっくり見直してみましょう！",
             thinker_type="粘り強い探索者 🔍" if has_pauses else "直感的ひらめき型 💡",
             canvas_marks=[
-                {"type": "circle", "box_2d": [300, 300, 500, 500], "comment": "ここが素晴らしい！"},
-                {"type": "line", "box_2d": [600, 300, 800, 500], "comment": "惜しい！あと少し！"}
-            ]
+                {"type": "circle", "box_2d": [300, 300, 500, 500], "comment": "◎"},
+                {"type": "underline", "box_2d": [600, 300, 650, 500], "comment": "もう一度確認！"},
+                {"type": "text", "box_2d": [650, 510, 700, 700], "comment": "惜しい！あと少し！"}
+            ],
+            solving_approach="三角形の面積公式を適用しようとした（シミュレーション）",
+            step_analysis=[
+                StepAnalysis(step_number=1, description="辺の長さの確認", is_correct=True, observation="問題の条件を正しく読み取れています。"),
+                StepAnalysis(step_number=2, description="面積計算の適用", is_correct=True, observation="面積公式を知っている点が素晴らしいです。")
+            ],
+            strategy_evaluation="面積公式を使おうとする方針は正しいです。直角三角形の判定から底辺と高さを特定するステップを意識すると、さらに精度が上がるでしょう。（シミュレーション）"
         )
 
     try:
@@ -138,8 +231,14 @@ def analyze_process(strokes: List[StrokeSchema], question_id: str, image_b64: st
                 response_mime_type="application/json",
                 response_schema=AnalysisResponse,
                 system_instruction=(
-                    "あなたは学習者の最終的な答えの正誤ではなく、試行錯誤のプロセス（筆記、消去、停止）に焦点を当てて"
-                    "全力で称賛し、自信を育てる情熱的なAI家庭教師です。学習者を深く観察した具体的で温かい日本語で回答してください。"
+                    "あなたは学習者のノートに赤ペンで直接書き込みをする情熱的な先生です。"
+                    "試行錯誤のプロセス（筆記、消去、停止）を深く観察し、温かく具体的な日本語で添削してください。\n\n"
+                    "重要な制約:\n"
+                    "- canvas_marks の type: 'circle' は正しい答えにのみ使用\n"
+                    "- type: 'underline' は間違っている箇所に使用\n"
+                    "- type: 'text' は先生の赤ペンコメントとして画像上に直接配置\n"
+                    "- 全ての問題の回答を一つずつ確認し、漏れなくマークをつけてください\n"
+                    "- 間違った箇所に circle を絶対につけないでください"
                 ),
                 temperature=0.2,
             )
@@ -162,5 +261,9 @@ def analyze_process(strokes: List[StrokeSchema], question_id: str, image_b64: st
                 "書いた後に消しゴムでオブジェクト消去されたプロセスがログに正しく蓄積されています。"
             ],
             hint="サーバー側の環境変数 GEMINI_API_KEY が正しく設定されているか確認してください。",
-            thinker_type="システム確認中 🛠️"
+            thinker_type="システム確認中 🛠️",
+            solving_approach="",
+            step_analysis=[],
+            strategy_evaluation=""
         )
+

@@ -2,7 +2,7 @@
 
 import React, { useRef, useEffect, useState, useCallback } from "react";
 import { getStroke } from "perfect-freehand";
-import { Stroke, CanvasImage, CanvasText } from "../types/canvas";
+import { Stroke, CanvasImage, CanvasText, AIAnnotation } from "../types/canvas";
 
 interface CanvasProps {
   strokes: Stroke[];
@@ -11,6 +11,7 @@ interface CanvasProps {
   setImages: React.Dispatch<React.SetStateAction<CanvasImage[]>>;
   texts: CanvasText[];
   setTexts: React.Dispatch<React.SetStateAction<CanvasText[]>>;
+  aiAnnotations?: AIAnnotation[];
 
   tool: "pen" | "eraser" | "select" | "text" | "lasso";
   eraserMode: "stroke" | "pixel";
@@ -53,6 +54,7 @@ export default function Canvas({
   strokes, setStrokes,
   images, setImages,
   texts, setTexts,
+  aiAnnotations,
   tool, eraserMode,
   brushColor, brushWidth, eraserWidth,
   textStyle,
@@ -94,6 +96,7 @@ export default function Canvas({
   const imagesRef = useRef(images); imagesRef.current = images;
   const textsRef = useRef(texts); textsRef.current = texts;
   const textStyleRef = useRef(textStyle); textStyleRef.current = textStyle;
+  const aiAnnotationsRef = useRef(aiAnnotations || []); aiAnnotationsRef.current = aiAnnotations || [];
 
   // ── 画像キャッシュ ─────────────────────────────────────────────────────────
   const imageCacheRef = useRef<Map<string, HTMLImageElement>>(new Map());
@@ -337,6 +340,92 @@ export default function Canvas({
         ctx.strokeRect(tx - 2, ty - 2, mw + 4, lines.length * lineH + 4);
       }
     });
+
+    // ── AIアノテーション（画像相対座標から動的に描画） ─────────────────────
+    const annotations = aiAnnotationsRef.current;
+    if (annotations.length > 0) {
+      annotations.forEach(ann => {
+        // 紐づく画像を検索
+        const img = imagesRef.current.find(im => im.id === ann.imageId);
+        if (!img) return;
+
+        // 画像の現在のワールド座標を取得（選択移動中も考慮）
+        const isSel = selectedIdsRef.current.images.includes(img.id);
+        const imgX = img.x + (isSel ? offset.x : 0);
+        const imgY = img.y + (isSel ? offset.y : 0);
+        const imgW = img.width;
+        const imgH = img.height;
+
+        // 0-1000 スケールの box_2d → ワールド座標に変換
+        const [ymin, xmin, ymax, xmax] = ann.box_2d;
+        const x1 = imgX + (xmin / 1000) * imgW;
+        const y1 = imgY + (ymin / 1000) * imgH;
+        const x2 = imgX + (xmax / 1000) * imgW;
+        const y2 = imgY + (ymax / 1000) * imgH;
+
+        const color = ann.color || (ann.type === "circle" ? "#107c41" : "#e81123");
+
+        if (ann.type === "circle") {
+          // ○マーク（先生風の手書き感のある楕円）
+          const cx = (x1 + x2) / 2;
+          const cy = (y1 + y2) / 2;
+          const rx = Math.max(Math.abs(x2 - x1) / 2, 12);
+          const ry = Math.max(Math.abs(y2 - y1) / 2, 12);
+
+          ctx.beginPath();
+          ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 3 / zoom;
+          ctx.stroke();
+
+          // コメント（○の右上に表示）
+          if (ann.comment) {
+            const fontSize = Math.max(12, Math.min(18, imgH * 0.025));
+            ctx.font = `bold ${fontSize}px sans-serif`;
+            ctx.fillStyle = color;
+            ctx.textBaseline = "bottom";
+            ctx.fillText(ann.comment, x2 + 4, y1);
+          }
+        } else if (ann.type === "underline") {
+          // 赤い波線下線
+          const lineY = y2 + 2;
+          ctx.beginPath();
+          const segments = 12;
+          for (let j = 0; j <= segments; j++) {
+            const px = x1 + (x2 - x1) * (j / segments);
+            const py = lineY + (j % 2 === 0 ? 3 : -3) / zoom;
+            if (j === 0) ctx.moveTo(px, py);
+            else ctx.lineTo(px, py);
+          }
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 2.5 / zoom;
+          ctx.stroke();
+
+          // ヒントコメント（下線の右下に表示）
+          if (ann.comment) {
+            const fontSize = Math.max(11, Math.min(16, imgH * 0.022));
+            ctx.font = `bold ${fontSize}px sans-serif`;
+            ctx.fillStyle = color;
+            ctx.textBaseline = "top";
+            ctx.fillText(ann.comment, x1, lineY + 6 / zoom);
+          }
+        } else if (ann.type === "text") {
+          // 先生の赤ペン書き入れ
+          if (ann.comment) {
+            const fontSize = Math.max(12, Math.min(20, imgH * 0.028));
+            ctx.font = `bold ${fontSize}px sans-serif`;
+            ctx.fillStyle = color;
+            ctx.textBaseline = "top";
+            // テキストを複数行対応
+            const lines = ann.comment.split("\n");
+            const lineH = fontSize * 1.3;
+            lines.forEach((line, li) => {
+              ctx.fillText(line, x1, y1 + li * lineH);
+            });
+          }
+        }
+      });
+    }
 
     // ── 投げ縄パス ─────────────────────────────────────────────────────────
     const lp = lassoPointsRef.current;

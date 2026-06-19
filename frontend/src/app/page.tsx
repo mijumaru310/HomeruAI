@@ -3,7 +3,7 @@
 import React, { useState, useRef, useCallback } from "react";
 import Canvas from "../components/Canvas";
 import ReplayPlayer from "../components/ReplayPlayer";
-import { Stroke, CanvasImage, CanvasText } from "../types/canvas";
+import { Stroke, CanvasImage, CanvasText, AIAnnotation } from "../types/canvas";
 import { jsPDF } from "jspdf";
 import { 
   PenTool, Eraser, Sparkles, Trash2, Code, ChevronDown, ChevronUp, HelpCircle,
@@ -20,6 +20,7 @@ interface PageData {
   images: CanvasImage[];
   texts: CanvasText[];
   bgFileName: string | null;
+  aiAnnotations: AIAnnotation[];
 }
 
 interface SectionData {
@@ -267,7 +268,7 @@ export default function Home() {
     {
       id: "sec_quick", title: "クイック ノート",
       pages: [
-        { id: "page_math", title: "数学ノート", date: "2026/06/17 水曜日 10:00", strokes: [], images: [], texts: [], bgFileName: null }
+        { id: "page_math", title: "数学ノート", date: "2026/06/17 水曜日 10:00", strokes: [], images: [], texts: [], bgFileName: null, aiAnnotations: [] }
       ]
     }
   ]);
@@ -337,7 +338,7 @@ export default function Home() {
 
   const handleClear = useCallback(() => {
     if (window.confirm("このページの内容をすべて消去しますか？")) {
-      updateActivePage(p => ({ ...p, strokes: [], images: [], texts: [] }));
+      updateActivePage(p => ({ ...p, strokes: [], images: [], texts: [], aiAnnotations: [] }));
       setReplayedStrokes([]); setIsReplaying(false);
     }
   }, [updateActivePage]);
@@ -400,15 +401,15 @@ export default function Home() {
     
     setIsAnalyzing(true);
     setAiAnalysisResult(null);
+    // 前回のアノテーションをクリア
+    updateActivePage(p => ({ ...p, aiAnnotations: [] }));
     
     try {
-      const bgImage = activePage.images.length > 0 ? activePage.images[0].url : null;
-      const bgImageSize = activePage.images.length > 0 ? { width: activePage.images[0].width, height: activePage.images[0].height } : null;
-
-      const canvasEl = document.getElementById("homeruai-canvas") as HTMLCanvasElement;
-      const dims = canvasEl ? { width: canvasEl.width, height: canvasEl.height } : { width: 1920, height: 1080 };
+      // 基準となる画像（最初の画像）を取得
+      const refImage = activePage.images.length > 0 ? activePage.images[0] : null;
       
-      const b64Image = await generateGhostRender(activePage.strokes, dims, bgImage);
+      // 画像基準のGhost Renderを生成
+      const ghostResult = await generateGhostRender(activePage.strokes, refImage);
 
       const response = await fetch("http://localhost:8000/api/analyze", {
         method: "POST",
@@ -429,10 +430,10 @@ export default function Home() {
             erasedAt: s.erasedAt,
             targetStrokeIds: s.targetStrokeIds
           })),
-          image: b64Image,
-          backgroundImage: bgImage,
-          imageWidth: bgImageSize?.width,
-          imageHeight: bgImageSize?.height
+          image: ghostResult.image,
+          backgroundImage: refImage?.url || null,
+          imageWidth: refImage?.width,
+          imageHeight: refImage?.height
         })
       });
 
@@ -443,59 +444,17 @@ export default function Home() {
       const result = await response.json();
       setAiAnalysisResult(result);
 
-      if (result.canvas_marks && Array.isArray(result.canvas_marks)) {
-         const newStrokes: Stroke[] = [];
-         const newTexts: CanvasText[] = [];
-         
-         result.canvas_marks.forEach((mark: any, i: number) => {
-            const [ymin, xmin, ymax, xmax] = mark.box_2d;
-            
-            // [0-1000] をキャンバスのワールド座標に変換
-            const x1 = (xmin / 1000) * dims.width;
-            const y1 = (ymin / 1000) * dims.height;
-            const x2 = (xmax / 1000) * dims.width;
-            const y2 = (ymax / 1000) * dims.height;
-            
-            const cx = (x1 + x2) / 2;
-            const cy = (y1 + y2) / 2;
-            const rx = Math.max(Math.abs(x2 - x1) / 2, 20); // 最小半径20
-            const ry = Math.max(Math.abs(y2 - y1) / 2, 20);
-            
-            if (mark.type === "circle") {
-               const points = [];
-               for (let j = 0; j <= 36; j++) {
-                  const theta = (j / 36) * 2 * Math.PI;
-                  points.push({ x: cx + rx * Math.cos(theta), y: cy + ry * Math.sin(theta), p: 1.0, t: j * 10 });
-               }
-               newStrokes.push({ strokeId: `ai_mark_stroke_${Date.now()}_${i}`, type: "draw", startTime: Date.now(), endTime: Date.now() + 360, points, color: "#e81123", width: 4, isErased: false });
-            } else if (mark.type === "line" || mark.type === "cross") {
-               // 波線（ジグザグ）を描画
-               const points = [];
-               for (let j = 0; j <= 10; j++) {
-                  const px = x1 + (x2 - x1) * (j / 10);
-                  const py = y2 + 10 + (j % 2 === 0 ? 5 : -5); // ボックスの下にジグザグ
-                  points.push({ x: px, y: py, p: 1.0, t: j * 20 });
-               }
-               newStrokes.push({ strokeId: `ai_mark_stroke_${Date.now()}_${i}`, type: "draw", startTime: Date.now(), endTime: Date.now() + 200, points, color: "#e81123", width: 4, isErased: false });
-            }
-            
-            if (mark.comment) {
-               newTexts.push({
-                  id: `ai_mark_text_${Date.now()}_${i}`,
-                  text: mark.comment,
-                  x: x2 + 10,
-                  y: Math.max(y1, 20),
-                  fontSize: 24,
-                  color: "#e81123",
-                  fontWeight: "bold",
-                  fontStyle: "normal",
-                  textDecoration: "none"
-               });
-            }
-         });
-         
-         if (newStrokes.length > 0) setStrokesForActivePage(prev => [...prev, ...newStrokes]);
-         if (newTexts.length > 0) setTextsForActivePage(prev => [...prev, ...newTexts]);
+      // canvas_marks を画像相対のAIAnnotationとして保存
+      if (result.canvas_marks && Array.isArray(result.canvas_marks) && refImage) {
+         const annotations: AIAnnotation[] = result.canvas_marks.map((mark: any, i: number) => ({
+           id: `ai_ann_${Date.now()}_${i}`,
+           imageId: refImage.id,
+           type: mark.type === "circle" ? "circle" : mark.type === "underline" ? "underline" : mark.type === "text" ? "text" : "underline",
+           box_2d: mark.box_2d as [number, number, number, number],
+           comment: mark.comment || undefined,
+           color: mark.type === "circle" ? "#107c41" : "#e81123",
+         }));
+         updateActivePage(p => ({ ...p, aiAnnotations: annotations }));
       }
     } catch (error) {
       console.warn("FastAPI connection failed. Using mock fallback.", error);
@@ -504,19 +463,22 @@ export default function Home() {
         overall_comment: `${mockAiFeedback["総合評価"]} (※API接続エラーのためモックデータを表示しています)`,
         praise_points: mockAiFeedback["プロセスへの称賛ポイント"],
         hint: mockAiFeedback["惜しい点（ヒント）"],
-        thinker_type: mockAiFeedback["思考タイプラベル"]
+        thinker_type: mockAiFeedback["思考タイプラベル"],
+        solving_approach: "",
+        step_analysis: [],
+        strategy_evaluation: ""
       });
     } finally {
       setIsAnalyzing(false);
     }
-  }, [activePage]);
+  }, [activePage, updateActivePage]);
 
   const handleAddSection = useCallback(() => {
     const title = prompt("新しいセクションの名前を入力:", "新規セクション");
     if (!title) return;
     const newId = `sec_${Date.now()}`; const newPageId = `page_${Date.now()}`;
     setSections(prev => [...prev, {
-      id: newId, title, pages: [{ id: newPageId, title: "", date: new Date().toLocaleString(), strokes: [], images: [], texts: [], bgFileName: null }]
+      id: newId, title, pages: [{ id: newPageId, title: "", date: new Date().toLocaleString(), strokes: [], images: [], texts: [], bgFileName: null, aiAnnotations: [] }]
     }]);
     setActiveSectionId(newId); setActivePageId(newPageId);
   }, []);
@@ -524,7 +486,7 @@ export default function Home() {
   const handleAddPage = useCallback(() => {
     const newPageId = `page_${Date.now()}`;
     setSections(prev => prev.map(s => s.id !== activeSectionId ? s : {
-      ...s, pages: [...s.pages, { id: newPageId, title: "", date: new Date().toLocaleString(), strokes: [], images: [], texts: [], bgFileName: null }]
+      ...s, pages: [...s.pages, { id: newPageId, title: "", date: new Date().toLocaleString(), strokes: [], images: [], texts: [], bgFileName: null, aiAnnotations: [] }]
     }));
     setActivePageId(newPageId);
   }, [activeSectionId]);
@@ -557,6 +519,7 @@ export default function Home() {
                 strokes={isReplaying ? replayedStrokes : activePage.strokes} setStrokes={setStrokesForActivePage}
                 images={activePage.images} setImages={setImagesForActivePage}
                 texts={activePage.texts} setTexts={setTextsForActivePage}
+                aiAnnotations={activePage.aiAnnotations}
                 tool={tool} eraserMode={eraserMode} brushColor={brushColor} brushWidth={brushWidth} eraserWidth={eraserWidth} textStyle={textStyle}
                 isReplaying={isReplaying} initialPan={pageTransformsRef.current[activePageId]?.pan || { x: 0, y: 0 }} initialZoom={pageTransformsRef.current[activePageId]?.zoom || 1}
                 onTransformChange={(newPan, newZoom) => { pageTransformsRef.current[activePageId] = { pan: newPan, zoom: newZoom }; setDisplayZoom(newZoom); }}
@@ -579,6 +542,31 @@ export default function Home() {
                   <p style={{ fontSize: "14px", color: "#605e5c", lineHeight: "1.6", margin: 0 }}>{aiAnalysisResult.overall_comment || aiAnalysisResult["総合評価"]}</p>
                 </div>
 
+                {aiAnalysisResult.solving_approach && (
+                  <div style={{ marginBottom: "20px", padding: "14px", backgroundColor: "#f0f6ff", borderRadius: "10px", border: "1px solid #d0e2ff" }}>
+                    <div style={{ fontSize: "13px", fontWeight: "bold", color: "#0043ce", marginBottom: "6px", display: "flex", alignItems: "center", gap: "5px" }}>
+                      <Code size={14} /> 解法アプローチ
+                    </div>
+                    <p style={{ fontSize: "13px", color: "#4a4a4a", lineHeight: "1.6", margin: 0 }}>{aiAnalysisResult.solving_approach}</p>
+                  </div>
+                )}
+
+                {aiAnalysisResult.step_analysis && aiAnalysisResult.step_analysis.length > 0 && (
+                  <div style={{ marginBottom: "20px" }}>
+                    <div style={{ fontSize: "14px", fontWeight: "bold", color: "#323130", marginBottom: "10px" }}>📝 手順分析</div>
+                    {aiAnalysisResult.step_analysis.map((step: any, i: number) => (
+                      <div key={i} style={{ marginBottom: "10px", padding: "10px 12px", backgroundColor: step.is_correct ? "#f0fdf4" : "#fff5f5", borderRadius: "8px", border: `1px solid ${step.is_correct ? "#bbf7d0" : "#fecaca"}` }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "4px" }}>
+                          <span style={{ fontSize: "14px" }}>{step.is_correct ? "✅" : "⚠️"}</span>
+                          <span style={{ fontSize: "12px", fontWeight: "bold", color: "#323130" }}>手順 {step.step_number}</span>
+                        </div>
+                        <div style={{ fontSize: "12px", color: "#4a4a4a", lineHeight: "1.5", marginBottom: "3px" }}>{step.description}</div>
+                        <div style={{ fontSize: "11px", color: "#6b7280", lineHeight: "1.4", fontStyle: "italic" }}>{step.observation}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
                 <div style={{ marginBottom: "20px" }}>
                   <div style={{ fontSize: "14px", fontWeight: "bold", color: "#323130", marginBottom: "8px" }}>素晴らしいポイント</div>
                   <ul style={{ paddingLeft: "24px", margin: 0 }}>
@@ -587,6 +575,13 @@ export default function Home() {
                     ))}
                   </ul>
                 </div>
+
+                {aiAnalysisResult.strategy_evaluation && (
+                  <div style={{ marginBottom: "20px", padding: "14px", backgroundColor: "#fdf4ff", borderRadius: "10px", border: "1px solid #e9d5ff" }}>
+                    <div style={{ fontSize: "13px", fontWeight: "bold", color: "#7c3aed", marginBottom: "6px" }}>🎯 方針評価</div>
+                    <p style={{ fontSize: "13px", color: "#4a4a4a", lineHeight: "1.6", margin: 0 }}>{aiAnalysisResult.strategy_evaluation}</p>
+                  </div>
+                )}
 
                 <div style={{ marginTop: "24px", padding: "16px", backgroundColor: "#e1dfdd", borderRadius: "12px" }}>
                   <div style={{ fontSize: "14px", fontWeight: "bold", color: "#323130", marginBottom: "8px", display: "flex", alignItems: "center", gap: "6px" }}><Lightbulb size={16} color="#0078d4" /> ヒント・アドバイス</div>
