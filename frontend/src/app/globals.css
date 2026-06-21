@@ -624,3 +624,8 @@ html, body {
     opacity: .8;
   }
 }
+
+@keyframes progress-bounce {
+  0% { left: -30%; }
+  100% { left: 100%; }
+}

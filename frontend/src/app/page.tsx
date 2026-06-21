@@ -8,7 +8,7 @@ import { jsPDF } from "jspdf";
 import { 
   PenTool, Eraser, Sparkles, Trash2, Code, ChevronDown, ChevronUp, HelpCircle,
   Lightbulb, Award, Upload, FileText, Maximize2, Plus, Eye, EyeOff, Move,
-  Type, Scissors, Download, Bold, Italic, Underline, ImagePlus
+  Type, Scissors, Download, Bold, Italic, Underline, ImagePlus,Bot, Loader2
 } from "lucide-react";
 import { generateGhostRender } from "../utils/ghostRenderer";
 
@@ -421,7 +421,7 @@ export default function Home() {
     pdf.addImage(imgData, "JPEG", 0, 0, pdfWidth, pdfHeight);
     pdf.save(`${activePage.title || "export"}.pdf`);
   }, [activePage.title]);
-  
+
   const handleAnalyze = useCallback(async () => {
     if (activePage.strokes.length === 0) {
       alert("分析する手書きプロセスがありません。キャンバスに記述してください。");
@@ -440,7 +440,7 @@ export default function Home() {
       // 画像基準のGhost Renderを生成
       const ghostResult = await generateGhostRender(activePage.strokes, refImage);
 
-      const response = await fetch("http://localhost:8000/api/analyze", {
+      const response = await fetch("/api/analyze", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -555,6 +555,70 @@ export default function Home() {
                 isReplaying={isReplaying} initialPan={pageTransformsRef.current[activePageId]?.pan || { x: 0, y: 0 }} initialZoom={pageTransformsRef.current[activePageId]?.zoom || 1}
                 onTransformChange={(newPan, newZoom) => { pageTransformsRef.current[activePageId] = { pan: newPan, zoom: newZoom }; setDisplayZoom(newZoom); }}
               />
+              {isAnalyzing && (
+                <div 
+                  style={{
+                    position: "absolute",
+                    top: 0,
+                    left: 0,
+                    width: "100%",
+                    height: "100%",
+                    backgroundColor: "rgba(255, 255, 255, 0.6)",
+                    backdropFilter: "blur(6px)", // 背景をすりガラス状にぼかす
+                    WebkitBackdropFilter: "blur(6px)",
+                    display: "flex",
+                    flexDirection: "column",
+                    justifyContent: "center",
+                    alignItems: "center",
+                    zIndex: 50, // キャンバスの上に表示
+                  }}
+                >
+                  <div 
+                    style={{
+                      backgroundColor: "#ffffff",
+                      padding: "32px 48px",
+                      borderRadius: "16px",
+                      boxShadow: "0 10px 30px rgba(92, 45, 145, 0.15)",
+                      display: "flex",
+                      flexDirection: "column",
+                      alignItems: "center",
+                      gap: "16px",
+                      border: "1px solid #e1dfdd",
+                      animation: "pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite" // フワフワさせる
+                    }}
+                  >
+                    <div style={{ position: "relative" }}>
+                      <Bot size={56} color="#5c2d91" />
+                      <div style={{ position: "absolute", top: -8, right: -12 }}>
+                        <Sparkles size={24} color="#ffb900" className="animate-spin" style={{ animationDuration: '3s' }} />
+                      </div>
+                    </div>
+                    
+                    <h3 style={{ margin: 0, fontSize: "22px", color: "#323130", fontWeight: "bold" }}>
+                      思考の軌跡を読み解いています...
+                    </h3>
+                    
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px", color: "#605e5c", fontSize: "14px", marginTop: "4px" }}>
+                      <Loader2 size={16} className="animate-spin" />
+                      <span>消しゴムの跡や、ペンの迷いも分析中</span>
+                    </div>
+                    
+                    {/* プログレスバー風の装飾 */}
+                    <div style={{ width: "100%", height: "4px", backgroundColor: "#f3f2f1", borderRadius: "2px", overflow: "hidden", marginTop: "12px", position: "relative" }}>
+                      <div 
+                        style={{ 
+                          position: "absolute",
+                          height: "100%", 
+                          backgroundColor: "#5c2d91", 
+                          width: "30%",
+                          borderRadius: "2px",
+                          animation: "progress-bounce 1.5s ease-in-out infinite alternate" 
+                        }} 
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
             {aiAnalysisResult && (
               <div style={{ width: "340px", borderLeft: "1px solid #e1dfdd", backgroundColor: "#fdfdfd", padding: "20px", overflowY: "auto", boxShadow: "-4px 0 12px rgba(0,0,0,0.05)", zIndex: 10 }}>

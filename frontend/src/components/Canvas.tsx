@@ -589,6 +589,7 @@ const drawImmediate = () => {
 
   // ── Pointer Down ──────────────────────────────────────────────────────────
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    e.preventDefault();
     if (isReplayingRef.current) return;
     const canvas = canvasRef.current;
     if (canvas) canvas.setPointerCapture(e.pointerId);
@@ -748,7 +749,7 @@ const drawImmediate = () => {
     }
 
     // ── ペン / 消しゴム ───────────────────────────────────────────────────
-    if (e.button === 0) {
+    if (e.button === 0 || e.pointerType === "pen") {
       commitTextInput(true);
       isDrawingRef.current = true;
       const pressure = e.pointerType === "pen" ? e.pressure : 0.5;
@@ -1046,6 +1047,8 @@ const drawImmediate = () => {
         overflow: "hidden",
         touchAction: "none",
         overscrollBehavior: "none",
+        userSelect: "none",           // ★これを追加
+        WebkitUserSelect: "none",     // ★これも追加（Safari用）
         backgroundColor: "#ffffff",
       }}
     >
@@ -1064,6 +1067,8 @@ const drawImmediate = () => {
           width: `${dimensions.width}px`,
           height: `${dimensions.height}px`,
           touchAction: "none", overscrollBehavior: "none",
+          userSelect: "none",           // ★これを追加
+          WebkitUserSelect: "none",     // ★これも追加
           cursor:
             tool === "select" || tool === "lasso" ? "default" :
             tool === "text" ? "text" : "crosshair",
