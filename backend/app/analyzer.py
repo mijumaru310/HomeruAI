@@ -117,6 +117,7 @@ def analyze_process(strokes: List[StrokeSchema], question_id: str, image_b64: st
 【AI分析への必須指示 — canvas_marks（先生の丸付け）について】
 
 あなたは先生として、学習者のノートに赤ペンで直接書き込むように添削してください。
+一番重要なのは回答の過程を重視することです。
 以下の3種類の `type` を使い分けて、各問題の回答欄ごとに個別にマークを付けてください。
 
 ■ `type: "circle"` （正解マーク ○）：
@@ -140,6 +141,7 @@ def analyze_process(strokes: List[StrokeSchema], question_id: str, image_b64: st
 ■ 重要ルール：
   - 画像内の全ての問題の回答欄を一つずつ確認し、正解なら circle、間違いなら underline と text で添削してください。
   - `box_2d` は [ymin, xmin, ymax, xmax] 形式の 0-1000 スケール（問題画像全体に対する正規化座標）で指定。
+  - box_2dは必ず [ymin, xmin, ymax, xmax] の形式で、0から1000までの「整数 (Integer)」の配列として出力してください。小数は使用不可です。
   - マークの座標は、対象の答え・式の位置をタイトに囲むように指定してください。
   - 多くのマークを出力してください（各問題に最低1つのマーク）。
 
