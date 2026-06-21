@@ -370,10 +370,30 @@ export default function Home() {
     if (fileInputRef.current) fileInputRef.current.value = "";
   }, [updateActivePage]);
 
-  const handleExportPNG = useCallback(() => {
+  const exportCanvasWithWhiteBackground = (mimeType: string, quality: number = 1.0) => {
     const canvas = document.getElementById("homeruai-canvas") as HTMLCanvasElement;
-    if (!canvas) return;
-    const url = canvas.toDataURL("image/png");
+    if (!canvas) return null;
+
+    const tempCanvas = document.createElement("canvas");
+    tempCanvas.width = canvas.width;
+    tempCanvas.height = canvas.height;
+    const ctx = tempCanvas.getContext("2d");
+    
+    if (ctx) {
+      // 白背景を塗りつぶす
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, tempCanvas.width, tempCanvas.height);
+      // その上に元のキャンバスの内容を描画
+      ctx.drawImage(canvas, 0, 0);
+    }
+    
+    return tempCanvas.toDataURL(mimeType, quality);
+  };
+
+  const handleExportPNG = useCallback(() => {
+    // 白背景合成済みのPNGデータURLを取得
+    const url = exportCanvasWithWhiteBackground("image/png");
+    if (!url) return;
     const a = document.createElement("a");
     a.href = url;
     a.download = `${activePage.title || "export"}.png`;
@@ -383,16 +403,25 @@ export default function Home() {
   const handleExportPDF = useCallback(() => {
     const canvas = document.getElementById("homeruai-canvas") as HTMLCanvasElement;
     if (!canvas) return;
-    const imgData = canvas.toDataURL("image/jpeg", 1.0);
+    
+    // PDF用にはJPEG（品質1.0）として白背景で取得
+    const imgData = exportCanvasWithWhiteBackground("image/jpeg", 1.0);
+    if (!imgData) return;
+
+    // PDFのサイズは画面上の見た目のサイズ（CSSサイズ）に合わせる
+    const pdfWidth = canvas.clientWidth; 
+    const pdfHeight = canvas.clientHeight;
+
     const pdf = new jsPDF({
-      orientation: canvas.width > canvas.height ? "landscape" : "portrait",
+      orientation: pdfWidth > pdfHeight ? "landscape" : "portrait",
       unit: "px",
-      format: [canvas.width, canvas.height]
+      format: [pdfWidth, pdfHeight]
     });
-    pdf.addImage(imgData, "JPEG", 0, 0, canvas.width, canvas.height);
+    
+    pdf.addImage(imgData, "JPEG", 0, 0, pdfWidth, pdfHeight);
     pdf.save(`${activePage.title || "export"}.pdf`);
   }, [activePage.title]);
-
+  
   const handleAnalyze = useCallback(async () => {
     if (activePage.strokes.length === 0) {
       alert("分析する手書きプロセスがありません。キャンバスに記述してください。");

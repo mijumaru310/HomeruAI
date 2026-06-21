@@ -63,7 +63,7 @@ export default function Canvas({
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
-
+  const dpr = typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1;
   // ── Pan / Zoom (ref 管理) ──────────────────────────────────────────────────
   const panRef = useRef({ x: initialPan.x, y: initialPan.y });
   const zoomRef = useRef(initialZoom);
@@ -168,7 +168,7 @@ export default function Canvas({
   }, [images]);
 
   // ── 描画メイン ─────────────────────────────────────────────────────────────
-  const drawImmediate = () => {
+const drawImmediate = () => {
     const canvas = canvasRef.current;
     if (!canvas || dimensions.width === 0) return;
     const ctx = canvas.getContext("2d");
@@ -179,7 +179,12 @@ export default function Canvas({
     const curTool = toolRef.current;
     const offset = dragOffsetRef.current;
 
-    ctx.clearRect(0, 0, dimensions.width, dimensions.height);
+    // ★ dpr（デバイスピクセル比）を取得
+    const dpr = typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1;
+
+    // ★ リセットしてからクリア（高解像度対応）
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, dimensions.width * dpr, dimensions.height * dpr);
 
     // ── グリッド ────────────────────────────────────────────────────────────
     {
@@ -188,7 +193,8 @@ export default function Canvas({
       const r = (dimensions.width - pan.x) / zoom;
       const b = (dimensions.height - pan.y) / zoom;
       ctx.save();
-      ctx.setTransform(zoom, 0, 0, zoom, pan.x, pan.y);
+      // ★ zoom と pan に dpr を掛ける
+      ctx.setTransform(zoom * dpr, 0, 0, zoom * dpr, pan.x * dpr, pan.y * dpr);
       ctx.strokeStyle = "rgba(0,0,0,0.05)";
       ctx.lineWidth = 1;
       ctx.beginPath();
@@ -200,7 +206,8 @@ export default function Canvas({
 
     // ── 画像 ────────────────────────────────────────────────────────────────
     ctx.save();
-    ctx.setTransform(zoom, 0, 0, zoom, pan.x, pan.y);
+    // ★ zoom と pan に dpr を掛ける
+    ctx.setTransform(zoom * dpr, 0, 0, zoom * dpr, pan.x * dpr, pan.y * dpr);
     imagesRef.current.forEach(img => {
       const el = imageCacheRef.current.get(img.id);
       const isSel = selectedIdsRef.current.images.includes(img.id);
@@ -250,16 +257,16 @@ export default function Canvas({
 
     // ── ストローク (オフスクリーン経由で pixel-erase を正しく処理) ──────────
     const off = document.createElement("canvas");
-    off.width = dimensions.width;
-    off.height = dimensions.height;
+    // ★ オフスクリーンキャンバスも高解像度にする
+    off.width = dimensions.width * dpr;
+    off.height = dimensions.height * dpr;
     const offCtx = off.getContext("2d");
     if (offCtx) {
-      offCtx.setTransform(zoom, 0, 0, zoom, pan.x, pan.y);
+      // ★ zoom と pan に dpr を掛ける
+      offCtx.setTransform(zoom * dpr, 0, 0, zoom * dpr, pan.x * dpr, pan.y * dpr);
 
       const renderStroke = (stroke: Stroke, isCurrentStroke = false) => {
-        // erase / pixel-erase タイプは描画しない (stroke eraser は state 側で isErased フラグ)
         if (stroke.type === "erase" || stroke.type === "pixel-erase") {
-          // pixel-erase のみ destination-out で描く
           if (stroke.type === "pixel-erase") {
             const pts = stroke.points.map(p => [p.x, p.y, p.p] as [number, number, number]);
             const outline = getStroke(pts, { size: stroke.width || 30, thinning: 0, smoothing: 0.5, streamline: 0.5 });
@@ -303,16 +310,23 @@ export default function Canvas({
       };
 
       strokesRef.current.forEach(s => renderStroke(s));
-      // 描画中の仮ストローク — ペンのみ (erase 系は renderStroke 内で処理済み)
       if (currentStrokeRef.current) renderStroke(currentStrokeRef.current, true);
     }
-    ctx.drawImage(off, 0, 0);
-
-    // ── テキスト ────────────────────────────────────────────────────────────
+    
+    // ★ オフスクリーンを書き戻すときは Transform をリセットする
     ctx.save();
-    ctx.setTransform(zoom, 0, 0, zoom, pan.x, pan.y);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.drawImage(off, 0, 0);
+    ctx.restore();
+
+    // ── テキスト＆AIアノテーション＆投げ縄 ───────────────────────────────────
+    ctx.save();
+    // ★ zoom と pan に dpr を掛ける
+    ctx.setTransform(zoom * dpr, 0, 0, zoom * dpr, pan.x * dpr, pan.y * dpr);
+    
+    // テキスト描画
     textsRef.current.forEach(txt => {
-      if (textInput?.id === txt.id) return; // 編集中は HTML textarea が表示する
+      if (textInput?.id === txt.id) return;
       const isSel = selectedIdsRef.current.texts.includes(txt.id);
       const dx = isSel ? offset.x : 0;
       const dy = isSel ? offset.y : 0;
@@ -341,22 +355,19 @@ export default function Canvas({
       }
     });
 
-    // ── AIアノテーション（画像相対座標から動的に描画） ─────────────────────
+    // AIアノテーション描画
     const annotations = aiAnnotationsRef.current;
     if (annotations.length > 0) {
       annotations.forEach(ann => {
-        // 紐づく画像を検索
         const img = imagesRef.current.find(im => im.id === ann.imageId);
         if (!img) return;
 
-        // 画像の現在のワールド座標を取得（選択移動中も考慮）
         const isSel = selectedIdsRef.current.images.includes(img.id);
         const imgX = img.x + (isSel ? offset.x : 0);
         const imgY = img.y + (isSel ? offset.y : 0);
         const imgW = img.width;
         const imgH = img.height;
 
-        // 0-1000 スケールの box_2d → ワールド座標に変換
         const [ymin, xmin, ymax, xmax] = ann.box_2d;
         const x1 = imgX + (xmin / 1000) * imgW;
         const y1 = imgY + (ymin / 1000) * imgH;
@@ -366,35 +377,28 @@ export default function Canvas({
         const color = ann.color || (ann.type === "circle" ? "#107c41" : "#e81123");
 
         if (ann.type === "circle") {
-          // ○マーク（先生風の手書き感のある楕円）
           const cx = (x1 + x2) / 2;
           const cy = (y1 + y2) / 2;
-          
-          // ボックスの幅と高さを取得
           let width = Math.abs(x2 - x1);
           let height = Math.abs(y2 - y1);
-          
-          // 【追加】細長すぎる丸を防ぐための補正（最低でもきれいな楕円を保つ）
-          const size = Math.max(width, height, 40); // 最低でも40pxの大きさ
-          const rx = size / 2 + 10; // 少し大きめに囲む
+          const size = Math.max(width, height, 40);
+          const rx = size / 2 + 10;
           const ry = size / 2 + 10;
 
           ctx.beginPath();
           ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
-          ctx.strokeStyle = color; // "#107c41" (Green)
-          ctx.lineWidth = 4 / zoom; // 少し太くして見栄えを良くする
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 4 / zoom;
           ctx.stroke();
 
-          // コメント（○の右上に表示）
           if (ann.comment) {
-            const fontSize = Math.max(14, Math.min(20, imgH * 0.03)); // フォントも少し大きめ
+            const fontSize = Math.max(14, Math.min(20, imgH * 0.03));
             ctx.font = `bold ${fontSize}px sans-serif`;
             ctx.fillStyle = color;
             ctx.textBaseline = "bottom";
-            ctx.fillText(ann.comment, cx + rx, cy - ry + 10); // 丸の右上に配置
+            ctx.fillText(ann.comment, cx + rx, cy - ry + 10);
           }
-        }else if (ann.type === "underline") {
-          // 赤い波線下線
+        } else if (ann.type === "underline") {
           const lineY = y2 + 2;
           ctx.beginPath();
           const segments = 12;
@@ -408,7 +412,6 @@ export default function Canvas({
           ctx.lineWidth = 2.5 / zoom;
           ctx.stroke();
 
-          // ヒントコメント（下線の右下に表示）
           if (ann.comment) {
             const fontSize = Math.max(11, Math.min(16, imgH * 0.022));
             ctx.font = `bold ${fontSize}px sans-serif`;
@@ -417,13 +420,11 @@ export default function Canvas({
             ctx.fillText(ann.comment, x1, lineY + 6 / zoom);
           }
         } else if (ann.type === "text") {
-          // 先生の赤ペン書き入れ
           if (ann.comment) {
             const fontSize = Math.max(12, Math.min(20, imgH * 0.028));
             ctx.font = `bold ${fontSize}px sans-serif`;
             ctx.fillStyle = color;
             ctx.textBaseline = "top";
-            // テキストを複数行対応
             const lines = ann.comment.split("\n");
             const lineH = fontSize * 1.3;
             lines.forEach((line, li) => {
@@ -434,7 +435,7 @@ export default function Canvas({
       });
     }
 
-    // ── 投げ縄パス ─────────────────────────────────────────────────────────
+    // 投げ縄
     const lp = lassoPointsRef.current;
     if (curTool === "lasso" && lp.length > 1) {
       ctx.strokeStyle = "rgba(92,45,145,0.8)";
@@ -457,6 +458,8 @@ export default function Canvas({
     const cp = pointerPosRef.current;
     if (curTool === "eraser" && cp && !isReplayingRef.current && !isPanningRef.current) {
       ctx.save();
+      // ★ コンテナ座標系に合わせて dpr のみスケール
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.beginPath();
       ctx.arc(cp.x, cp.y, eraserWidthRef.current / 2, 0, Math.PI * 2);
       ctx.fillStyle = "rgba(239,68,68,0.1)";
@@ -1049,8 +1052,8 @@ export default function Canvas({
       <canvas
         ref={canvasRef}
         id="homeruai-canvas"
-        width={dimensions.width}
-        height={dimensions.height}
+        width={dimensions.width * dpr}
+        height={dimensions.height * dpr}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
@@ -1058,7 +1061,8 @@ export default function Canvas({
         onContextMenu={e => e.preventDefault()}
         style={{
           position: "absolute", top: 0, left: 0,
-          width: "100%", height: "100%",
+          width: `${dimensions.width}px`,
+          height: `${dimensions.height}px`,
           touchAction: "none", overscrollBehavior: "none",
           cursor:
             tool === "select" || tool === "lasso" ? "default" :
