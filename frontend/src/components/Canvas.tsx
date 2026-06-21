@@ -369,24 +369,31 @@ export default function Canvas({
           // ○マーク（先生風の手書き感のある楕円）
           const cx = (x1 + x2) / 2;
           const cy = (y1 + y2) / 2;
-          const rx = Math.max(Math.abs(x2 - x1) / 2, 12);
-          const ry = Math.max(Math.abs(y2 - y1) / 2, 12);
+          
+          // ボックスの幅と高さを取得
+          let width = Math.abs(x2 - x1);
+          let height = Math.abs(y2 - y1);
+          
+          // 【追加】細長すぎる丸を防ぐための補正（最低でもきれいな楕円を保つ）
+          const size = Math.max(width, height, 40); // 最低でも40pxの大きさ
+          const rx = size / 2 + 10; // 少し大きめに囲む
+          const ry = size / 2 + 10;
 
           ctx.beginPath();
           ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
-          ctx.strokeStyle = color;
-          ctx.lineWidth = 3 / zoom;
+          ctx.strokeStyle = color; // "#107c41" (Green)
+          ctx.lineWidth = 4 / zoom; // 少し太くして見栄えを良くする
           ctx.stroke();
 
           // コメント（○の右上に表示）
           if (ann.comment) {
-            const fontSize = Math.max(12, Math.min(18, imgH * 0.025));
+            const fontSize = Math.max(14, Math.min(20, imgH * 0.03)); // フォントも少し大きめ
             ctx.font = `bold ${fontSize}px sans-serif`;
             ctx.fillStyle = color;
             ctx.textBaseline = "bottom";
-            ctx.fillText(ann.comment, x2 + 4, y1);
+            ctx.fillText(ann.comment, cx + rx, cy - ry + 10); // 丸の右上に配置
           }
-        } else if (ann.type === "underline") {
+        }else if (ann.type === "underline") {
           // 赤い波線下線
           const lineY = y2 + 2;
           ctx.beginPath();
