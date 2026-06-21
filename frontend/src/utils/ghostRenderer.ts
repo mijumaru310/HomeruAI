@@ -1,154 +1,69 @@
 import { Stroke, CanvasImage } from "../types/canvas";
+import { getStroke } from "perfect-freehand";
 
-export interface GhostRenderResult {
-  image: string;
-  /** 基準となった画像の情報（AIマーク座標の基準） */
-  referenceImage: {
-    id: string;
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-  } | null;
-}
-
-/**
- * 画像基準のGhost Render生成
- *
- * 問題画像を(0,0)に配置し、ストロークを画像相対座標でオーバーレイする。
- * これにより、Geminiが返す0-1000座標 = 画像相対座標となり、変換ロスがゼロになる。
- */
-export const generateGhostRender = async (
-  strokes: Stroke[],
-  refImage: CanvasImage | null,
-): Promise<GhostRenderResult> => {
-  // 画像がない場合: ストロークのみからレンダリング
+export const generateGhostRender = async (strokes: Stroke[], refImage: CanvasImage | null): Promise<{ image: string }> => {
+  // 背景画像がない場合は空を返す
   if (!refImage) {
-    return generateStrokeOnlyRender(strokes);
+    console.warn("背景画像が設定されていません。");
+    return { image: "" };
   }
-
-  const imgW = refImage.width;
-  const imgH = refImage.height;
 
   const canvas = document.createElement("canvas");
-  canvas.width = imgW;
-  canvas.height = imgH;
+  
+  // ① キャンバスのサイズを「背景画像」と完全にピッタリ同じサイズにする
+  canvas.width = refImage.width;
+  canvas.height = refImage.height;
+  
   const ctx = canvas.getContext("2d");
+  if (!ctx) return { image: "" };
 
-  if (!ctx) {
-    throw new Error("Failed to get 2D context for ghost rendering.");
-  }
-
-  // 背景を白で塗りつぶす
+  // 背景を白で初期化
   ctx.fillStyle = "#ffffff";
-  ctx.fillRect(0, 0, imgW, imgH);
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-  // 問題画像を(0,0)に描画
-  await new Promise<void>((resolve, reject) => {
-    const img = new Image();
-    img.onload = () => {
-      ctx.drawImage(img, 0, 0, imgW, imgH);
-      resolve();
-    };
-    img.onerror = () => reject(new Error("Failed to load reference image"));
-    img.src = refImage.url;
+  // ② 背景画像をキャンバスの(0, 0)にピッタリ配置
+  const img = new Image();
+  img.src = refImage.url;
+  await new Promise((resolve) => {
+    img.onload = resolve;
   });
+  ctx.drawImage(img, 0, 0, refImage.width, refImage.height);
 
-  // ストロークを画像相対座標でオーバーレイ描画
-  for (const stroke of strokes) {
-    if (stroke.points.length === 0) continue;
-    if (stroke.type !== "draw") continue;
+  // ③ ストロークの描画（時系列順）
+  const sortedStrokes = [...strokes].sort((a, b) => a.startTime - b.startTime);
 
-    ctx.beginPath();
-    // ストロークのワールド座標 → 画像相対座標に変換
-    ctx.moveTo(
-      stroke.points[0].x - refImage.x,
-      stroke.points[0].y - refImage.y
-    );
-    for (let i = 1; i < stroke.points.length; i++) {
-      ctx.lineTo(
-        stroke.points[i].x - refImage.x,
-        stroke.points[i].y - refImage.y
-      );
-    }
-
-    ctx.lineCap = "round";
-    ctx.lineJoin = "round";
-    ctx.lineWidth = stroke.width ? stroke.width * 1.5 : 4;
-
-    if (stroke.isErased) {
-      ctx.strokeStyle = "rgba(255, 0, 0, 0.3)";
-    } else {
-      ctx.strokeStyle = "#000000";
-    }
-    ctx.stroke();
-  }
-
-  return {
-    image: canvas.toDataURL("image/png"),
-    referenceImage: {
-      id: refImage.id,
-      x: refImage.x,
-      y: refImage.y,
-      width: refImage.width,
-      height: refImage.height,
-    },
-  };
-};
-
-/** ストロークのみの場合のフォールバック */
-async function generateStrokeOnlyRender(
-  strokes: Stroke[]
-): Promise<GhostRenderResult> {
-  let minX = Infinity, minY = Infinity;
-  let maxX = -Infinity, maxY = -Infinity;
-
-  for (const stroke of strokes) {
+  for (const stroke of sortedStrokes) {
     if (stroke.type !== "draw" || stroke.points.length === 0) continue;
-    for (const pt of stroke.points) {
-      minX = Math.min(minX, pt.x);
-      minY = Math.min(minY, pt.y);
-      maxX = Math.max(maxX, pt.x);
-      maxY = Math.max(maxY, pt.y);
-    }
-  }
 
-  if (minX === Infinity) {
-    minX = 0; minY = 0; maxX = 800; maxY = 600;
-  }
+    // 消された線は半透明の赤、残っている線は黒
+    ctx.fillStyle = stroke.isErased ? "rgba(239, 68, 68, 0.3)" : "#000000";
+    
+    // 【重要】ストロークのワールド座標から、背景画像の座標(refImage.x, refImage.y)を引いて
+    // 背景画像の左上を(0,0)としたローカル座標に変換する
+    const pts = stroke.points.map(p => [
+      p.x - refImage.x, 
+      p.y - refImage.y, 
+      p.p
+    ] as [number, number, number]);
+    
+    const outline = getStroke(pts, { 
+      size: stroke.width || 4, 
+      thinning: 0.5, 
+      smoothing: 0.5, 
+      streamline: 0.5 
+    });
+    
+    if (outline.length === 0) continue;
 
-  const margin = 40;
-  minX -= margin; minY -= margin;
-  maxX += margin; maxY += margin;
-
-  const w = Math.max(400, Math.ceil(maxX - minX));
-  const h = Math.max(300, Math.ceil(maxY - minY));
-
-  const canvas = document.createElement("canvas");
-  canvas.width = w;
-  canvas.height = h;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) throw new Error("Failed to get 2D context");
-
-  ctx.fillStyle = "#ffffff";
-  ctx.fillRect(0, 0, w, h);
-
-  for (const stroke of strokes) {
-    if (stroke.points.length === 0 || stroke.type !== "draw") continue;
     ctx.beginPath();
-    ctx.moveTo(stroke.points[0].x - minX, stroke.points[0].y - minY);
-    for (let i = 1; i < stroke.points.length; i++) {
-      ctx.lineTo(stroke.points[i].x - minX, stroke.points[i].y - minY);
+    ctx.moveTo(outline[0][0], outline[0][1]);
+    for (let i = 1; i < outline.length; i++) {
+      ctx.lineTo(outline[i][0], outline[i][1]);
     }
-    ctx.lineCap = "round";
-    ctx.lineJoin = "round";
-    ctx.lineWidth = stroke.width ? stroke.width * 1.5 : 4;
-    ctx.strokeStyle = stroke.isErased ? "rgba(255,0,0,0.3)" : "#000000";
-    ctx.stroke();
+    ctx.closePath();
+    ctx.fill();
   }
 
-  return {
-    image: canvas.toDataURL("image/png"),
-    referenceImage: null,
-  };
-}
+  // AIに送りやすいように軽量なJPEGとして出力
+  return { image: canvas.toDataURL("image/jpeg", 0.8) };
+};
