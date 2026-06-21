@@ -31,6 +31,9 @@ class AnalysisRequest(BaseModel):
     backgroundImage: Optional[str] = None  # Base64 encoded background image
     imageWidth: Optional[int] = None      # original background image width
     imageHeight: Optional[int] = None     # original background image height
+    #新しく追加 @0621
+    imageX: Optional[float] = 0.0
+    imageY: Optional[float] = 0.0
 
 class StepAnalysis(BaseModel):
     step_number: int = Field(..., description="ステップ番号（書き順に基づく）")

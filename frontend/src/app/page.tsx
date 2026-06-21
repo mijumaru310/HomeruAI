@@ -433,7 +433,9 @@ export default function Home() {
           image: ghostResult.image,
           backgroundImage: refImage?.url || null,
           imageWidth: refImage?.width,
-          imageHeight: refImage?.height
+          imageHeight: refImage?.height,
+          imageX: refImage?.x || 0, // これを追加！ @0621
+          imageY: refImage?.y || 0  // これを追加！
         })
       });
 
