@@ -52,7 +52,11 @@ def build_stroke_sequence_text(strokes: List[StrokeSchema]) -> str:
         duration_sec = round((s.endTime - s.startTime) / 1000.0, 1)
         
         # ストロークの大まかな位置と範囲を計算
-        if s.points:
+        point_count = s.pointCount if s.pointCount is not None else len(s.points)
+        if s.boundingBox and len(s.boundingBox) == 4:
+            min_x, max_x, min_y, max_y = s.boundingBox
+            extent = f"位置({int(min_x)},{int(min_y)})→({int(max_x)},{int(max_y)})"
+        elif s.points:
             xs = [p.x for p in s.points]
             ys = [p.y for p in s.points]
             min_x, max_x = min(xs), max(xs)
@@ -65,7 +69,7 @@ def build_stroke_sequence_text(strokes: List[StrokeSchema]) -> str:
         
         lines.append(
             f"  手順{i+1}: 開始{elapsed_sec}秒後, 筆記時間{duration_sec}秒, "
-            f"{extent}, 点数{len(s.points)} {erased_info}"
+            f"{extent}, 点数{point_count} {erased_info}"
         )
     
     return "\n".join(lines)
@@ -198,21 +202,42 @@ def analyze_process(strokes: List[StrokeSchema], question_id: str, image_b64: st
         client = genai.Client(api_key=GEMINI_API_KEY)
         
         # Base64文字列からバイト列に変換
+        mime_type = 'image/png'  # デフォルトのフォールバック値
         b64_str = image_b64
-        if "," in b64_str:
-            b64_str = b64_str.split(",")[1]
+        if b64_str.startswith("data:"):
+            header, b64_str = b64_str.split(",", 1)
+            if ";base64" in header:
+                mime_part = header.split(";")[0]
+                mime_type = mime_part.split(":")[1]
+        elif "," in b64_str:
+            header, b64_str = b64_str.split(",", 1)
+            
         img_bytes = base64.b64decode(b64_str)
         
+        # マジックバイトによる MIME タイプの動的検証（フォールバック）
+        if img_bytes.startswith(b'\x89PNG\r\n\x1a\n'):
+            mime_type = 'image/png'
+        elif img_bytes.startswith(b'\xff\xd8'):
+            mime_type = 'image/jpeg'
+        elif img_bytes.startswith(b'GIF87a') or img_bytes.startswith(b'GIF89a'):
+            mime_type = 'image/gif'
+        elif img_bytes.startswith(b'RIFF') and len(img_bytes) > 12 and img_bytes[8:12] == b'WEBP':
+            mime_type = 'image/webp'
+        
         # Structured Outputs (response_schema) を使って Gemini を呼び出し
-        response = client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=[
+        contents = []
+        if img_bytes:
+            contents.append(
                 types.Part.from_bytes(
                     data=img_bytes,
-                    mime_type='image/png',
-                ),
-                prompt
-            ],
+                    mime_type=mime_type,
+                )
+            )
+        contents.append(prompt)
+
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=contents,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
                 response_schema=AnalysisResponse,
@@ -241,6 +266,7 @@ def analyze_process(strokes: List[StrokeSchema], question_id: str, image_b64: st
         print(f"Error calling Gemini API: {e}")
         # APIエラー時の詳細なフォールバック
         return AnalysisResponse(
+            teacher_internal_reasoning=f"AIとの連携中にエラーが発生しました: {str(e)}",
             overall_comment=f"手書きプロセスログは正常にサーバーに届きましたが、AI連携中にエラーが発生しました: {str(e)}",
             praise_points=[
                 f"送信された総ストローク数 ({len(strokes)}件) をサーバーで正常に受信・処理できました。",
@@ -248,6 +274,7 @@ def analyze_process(strokes: List[StrokeSchema], question_id: str, image_b64: st
             ],
             hint="サーバー側の環境変数 GEMINI_API_KEY が正しく設定されているか確認してください。",
             thinker_type="システム確認中 🛠️",
+            canvas_marks=[],
             solving_approach="",
             step_analysis=[],
             strategy_evaluation=""

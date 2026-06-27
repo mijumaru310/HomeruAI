@@ -624,3 +624,15 @@ html, body {
     opacity: .8;
   }
 }
+
+@keyframes progress-bounce {
+  0% { left: -30%; }
+  100% { left: 100%; }
+}
+
+#homeruai-canvas {
+  touch-action: none !important;
+  -webkit-touch-callout: none !important;
+  -webkit-user-select: none !important;
+  user-select: none !important;
+}

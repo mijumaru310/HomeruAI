@@ -8,7 +8,7 @@ import { jsPDF } from "jspdf";
 import { 
   PenTool, Eraser, Sparkles, Trash2, Code, ChevronDown, ChevronUp, HelpCircle,
   Lightbulb, Award, Upload, FileText, Maximize2, Plus, Eye, EyeOff, Move,
-  Type, Scissors, Download, Bold, Italic, Underline, ImagePlus
+  Type, Scissors, Download, Bold, Italic, Underline, ImagePlus,Bot, Loader2, Undo
 } from "lucide-react";
 import { generateGhostRender } from "../utils/ghostRenderer";
 
@@ -95,7 +95,7 @@ const RibbonHeader = React.memo(({
       <div className="onenote-header-top">
         <div className="onenote-header-title-area">
           <h1 className="onenote-header-title">HomeruAI Note</h1>
-          <span className="onenote-header-badge">OneNote Mode</span>
+          <span className="onenote-header-badge">Homeru AI Mode</span>
         </div>
         <div>
           <button onClick={handleAnalyze} disabled={activePageStrokes.length === 0 || isAnalyzing || isReplaying} className="btn btn-accent" style={{ backgroundColor: "#ffffff", color: "#5c2d91", borderColor: "#ffffff" }}>
@@ -343,6 +343,37 @@ export default function Home() {
     }
   }, [updateActivePage]);
 
+  const handleUndo = useCallback(() => {
+    setStrokesForActivePage(prev => {
+      let latestTime = 0;
+      let actionType: "draw" | "erase" = "draw";
+      let latestStrokeId = "";
+
+      // 一番最後に行われたアクション（描いた、または消した）を探す
+      prev.forEach(s => {
+        if (!s.isErased && s.endTime > latestTime) {
+          latestTime = s.endTime;
+          actionType = "draw";
+          latestStrokeId = s.strokeId;
+        }
+        if (s.isErased && s.erasedAt && s.erasedAt > latestTime) {
+          latestTime = s.erasedAt;
+          actionType = "erase";
+        }
+      });
+
+      if (latestTime === 0) return prev; // 戻すものがない場合
+
+      if (actionType === "draw") {
+        // 「描いた」のを戻す場合 → 消しゴムで消した扱いにすることでAIのログに残す
+        return prev.map(s => s.strokeId === latestStrokeId ? { ...s, isErased: true, erasedAt: Date.now() } : s);
+      } else {
+        // 「消しゴムで消した」のを戻す場合 → 消去フラグを解除して復活させる
+        return prev.map(s => s.erasedAt === latestTime ? { ...s, isErased: false, erasedAt: undefined } : s);
+      }
+    });
+  }, [setStrokesForActivePage]);
+
   const handleSetBlank = useCallback(() => {
     updateActivePage(p => ({ ...p, images: [], bgFileName: null }));
     handleResetTransform();
@@ -421,7 +452,7 @@ export default function Home() {
     pdf.addImage(imgData, "JPEG", 0, 0, pdfWidth, pdfHeight);
     pdf.save(`${activePage.title || "export"}.pdf`);
   }, [activePage.title]);
-  
+
   const handleAnalyze = useCallback(async () => {
     if (activePage.strokes.length === 0) {
       alert("分析する手書きプロセスがありません。キャンバスに記述してください。");
@@ -440,25 +471,39 @@ export default function Home() {
       // 画像基準のGhost Renderを生成
       const ghostResult = await generateGhostRender(activePage.strokes, refImage);
 
-      const response = await fetch("http://localhost:8000/api/analyze", {
+      const response = await fetch("/api/analyze", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
           questionId: activePage.title || "custom_upload",
-          strokes: activePage.strokes.map(s => ({
-            strokeId: s.strokeId,
-            type: s.type,
-            startTime: s.startTime,
-            endTime: s.endTime,
-            points: s.points.map(p => ({ x: p.x, y: p.y, p: p.p, t: p.t })),
-            color: s.color,
-            width: s.width,
-            isErased: s.isErased || false,
-            erasedAt: s.erasedAt,
-            targetStrokeIds: s.targetStrokeIds
-          })),
+          strokes: activePage.strokes.map(s => {
+            let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+            for (const p of s.points) {
+              if (p.x < minX) minX = p.x;
+              if (p.x > maxX) maxX = p.x;
+              if (p.y < minY) minY = p.y;
+              if (p.y > maxY) maxY = p.y;
+            }
+            if (minX === Infinity) {
+              minX = 0; maxX = 0; minY = 0; maxY = 0;
+            }
+            return {
+              strokeId: s.strokeId,
+              type: s.type,
+              startTime: s.startTime,
+              endTime: s.endTime,
+              points: [], // ペイロードサイズ削減のため空配列を送信
+              boundingBox: [minX, maxX, minY, maxY],
+              pointCount: s.points.length,
+              color: s.color,
+              width: s.width,
+              isErased: s.isErased || false,
+              erasedAt: s.erasedAt,
+              targetStrokeIds: s.targetStrokeIds
+            };
+          }),
           image: ghostResult.image,
           backgroundImage: refImage?.url || null,
           imageWidth: refImage?.width,
@@ -491,7 +536,7 @@ export default function Home() {
       console.warn("FastAPI connection failed. Using mock fallback.", error);
       await new Promise(resolve => setTimeout(resolve, 1500));
       setAiAnalysisResult({
-        overall_comment: `${mockAiFeedback["総合評価"]} (※API接続エラーのためモックデータを表示しています)`,
+        overall_comment: mockAiFeedback["総合評価"] + " (※API接続エラーのためモックデータを表示しています)",
         praise_points: mockAiFeedback["プロセスへの称賛ポイント"],
         hint: mockAiFeedback["惜しい点（ヒント）"],
         thinker_type: mockAiFeedback["思考タイプラベル"],
@@ -543,8 +588,8 @@ export default function Home() {
             <input type="text" value={activePage.title} onChange={e => updateActivePage(p => ({ ...p, title: e.target.value }))} className="canvas-title-input" placeholder="無題のページ" />
             <div className="canvas-date-label">{activePage.date}</div>
           </div>
-          <div className="canvas-body" style={{ display: "flex", flexDirection: "row", width: "100%", height: "100%", overflow: "hidden" }}>
-            <div style={{ flex: 1, position: "relative" }}>
+<div className="canvas-body" style={{ display: "flex", flexDirection: "row", width: "100%", height: "calc(100vh - 120px)", overflow: "hidden" }}>
+  <div style={{ flex: 1, position: "relative", width: "100%", height: "100%" }}>
               <Canvas
                 key={activePageId}
                 strokes={isReplaying ? replayedStrokes : activePage.strokes} setStrokes={setStrokesForActivePage}
@@ -555,6 +600,70 @@ export default function Home() {
                 isReplaying={isReplaying} initialPan={pageTransformsRef.current[activePageId]?.pan || { x: 0, y: 0 }} initialZoom={pageTransformsRef.current[activePageId]?.zoom || 1}
                 onTransformChange={(newPan, newZoom) => { pageTransformsRef.current[activePageId] = { pan: newPan, zoom: newZoom }; setDisplayZoom(newZoom); }}
               />
+              {isAnalyzing && (
+                <div 
+                  style={{
+                    position: "absolute",
+                    top: 0,
+                    left: 0,
+                    width: "100%",
+                    height: "100%",
+                    backgroundColor: "rgba(255, 255, 255, 0.6)",
+                    backdropFilter: "blur(6px)", // 背景をすりガラス状にぼかす
+                    WebkitBackdropFilter: "blur(6px)",
+                    display: "flex",
+                    flexDirection: "column",
+                    justifyContent: "center",
+                    alignItems: "center",
+                    zIndex: 50, // キャンバスの上に表示
+                  }}
+                >
+                  <div 
+                    style={{
+                      backgroundColor: "#ffffff",
+                      padding: "32px 48px",
+                      borderRadius: "16px",
+                      boxShadow: "0 10px 30px rgba(92, 45, 145, 0.15)",
+                      display: "flex",
+                      flexDirection: "column",
+                      alignItems: "center",
+                      gap: "16px",
+                      border: "1px solid #e1dfdd",
+                      animation: "pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite" // フワフワさせる
+                    }}
+                  >
+                    <div style={{ position: "relative" }}>
+                      <Bot size={56} color="#5c2d91" />
+                      <div style={{ position: "absolute", top: -8, right: -12 }}>
+                        <Sparkles size={24} color="#ffb900" className="animate-spin" style={{ animationDuration: '3s' }} />
+                      </div>
+                    </div>
+                    
+                    <h3 style={{ margin: 0, fontSize: "22px", color: "#323130", fontWeight: "bold" }}>
+                      思考の軌跡を読み解いています...
+                    </h3>
+                    
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px", color: "#605e5c", fontSize: "14px", marginTop: "4px" }}>
+                      <Loader2 size={16} className="animate-spin" />
+                      <span>消しゴムの跡や、ペンの迷いも分析中</span>
+                    </div>
+                    
+                    {/* プログレスバー風の装飾 */}
+                    <div style={{ width: "100%", height: "4px", backgroundColor: "#f3f2f1", borderRadius: "2px", overflow: "hidden", marginTop: "12px", position: "relative" }}>
+                      <div 
+                        style={{ 
+                          position: "absolute",
+                          height: "100%", 
+                          backgroundColor: "#5c2d91", 
+                          width: "30%",
+                          borderRadius: "2px",
+                          animation: "progress-bounce 1.5s ease-in-out infinite alternate" 
+                        }} 
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
             {aiAnalysisResult && (
               <div style={{ width: "340px", borderLeft: "1px solid #e1dfdd", backgroundColor: "#fdfdfd", padding: "20px", overflowY: "auto", boxShadow: "-4px 0 12px rgba(0,0,0,0.05)", zIndex: 10 }}>
