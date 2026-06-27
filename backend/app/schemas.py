@@ -13,6 +13,8 @@ class StrokeSchema(BaseModel):
     startTime: int  # absolute timestamp (ms)
     endTime: int    # absolute timestamp (ms)
     points: List[PointSchema]
+    boundingBox: Optional[List[float]] = None
+    pointCount: Optional[int] = None
     color: Optional[str] = None
     width: Optional[float] = None
     isErased: Optional[bool] = False

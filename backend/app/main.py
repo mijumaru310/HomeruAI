@@ -1,6 +1,7 @@
 import os
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+import traceback
 from .schemas import AnalysisRequest, AnalysisResponse
 from .analyzer import analyze_process
 
@@ -19,6 +20,29 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    print(f"Validation Error: {exc}")
+    return JSONResponse(
+        status_code=422,
+        content={"detail": exc.errors(), "body": exc.body},
+    )
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    print(f"Incoming request: {request.method} {request.url}")
+    try:
+        response = await call_next(request)
+        print(f"Request completed with status: {response.status_code}")
+        return response
+    except Exception as e:
+        print(f"UNHANDLED EXCEPTION in request: {e}")
+        import traceback
+        traceback.print_exc()
+        raise e
 
 @app.post("/api/analyze", response_model=AnalysisResponse)
 async def analyze_strokes(request: AnalysisRequest):
