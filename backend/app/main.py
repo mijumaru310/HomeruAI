@@ -57,14 +57,17 @@ async def analyze_strokes(request: AnalysisRequest):
         )
         
     try:
-        # 1. 停止時間分析と Gemini API 呼び出し
-        feedback = analyze_process(request.strokes, request.questionId, request.image)
+        # 1. 停止時間分析と AI API 呼び出し
+        feedback = analyze_process(request.strokes, request.questionId, request.image, request.model)
         
         return feedback
         
     except Exception as e:
         import traceback
-        traceback.print_exc()
+        traceback_str = traceback.format_exc()
+        print(traceback_str)
+        with open("error.log", "w", encoding="utf-8") as f:
+            f.write(traceback_str)
         raise HTTPException(
             status_code=500, 
             detail=f"サーバー内部エラーが発生しました: {str(e)}"

@@ -4,9 +4,10 @@ import base64
 from typing import List
 from google import genai
 from google.genai import types
+from openai import OpenAI
 
-from .schemas import StrokeSchema, AnalysisResponse, StepAnalysis
-from .config import GEMINI_API_KEY, QUESTION_METADATA
+from .schemas import StrokeSchema, AnalysisResponse
+from .config import GEMINI_API_KEY, NVIDIA_API_KEY, QUESTION_METADATA
 
 def calculate_pauses(strokes: List[StrokeSchema]) -> List[dict]:
     """
@@ -74,9 +75,9 @@ def build_stroke_sequence_text(strokes: List[StrokeSchema]) -> str:
     
     return "\n".join(lines)
 
-def analyze_process(strokes: List[StrokeSchema], question_id: str, image_b64: str) -> AnalysisResponse:
+def analyze_process(strokes: List[StrokeSchema], question_id: str, image_b64: str, model: str = "gemini") -> AnalysisResponse:
     """
-    フロントエンドで生成されたGhost Rendered画像（Base64）とメタデータ（停止時間）をGemini APIに送信し、
+    フロントエンドで生成されたGhost Rendered画像（Base64）とメタデータ（停止時間）をGemini APIまたはNVIDIA APIに送信し、
     学習プロセスに特化したStructured Output JSONフィードバックを取得する。
     """
     # 1. 停止時間の分析
@@ -124,160 +125,198 @@ def analyze_process(strokes: List[StrokeSchema], question_id: str, image_b64: st
 2. 「半透明の赤い線」＝ すでに消しゴムで消された過去の回答です。これに対してバツをつけたり、正誤判定の対象にしたりしないでください。赤い線は「間違いに気づいて修正した試行錯誤の証」としてテキストで褒めるためだけに観察してください。
 
 【最重要ルール２：印刷された問題文への丸付け禁止】
-`canvas_marks` で丸（circle）やテキスト（text）を入れる場所は、**必ず「生徒が手書きの黒い線で書いた途中式や答え」の上またはその直近**に限定してください。
-あらかじめ印刷されている問題文や活字の上に丸をつけたりコメントを配置することは絶対に避けてください。生徒自身の筆跡（手書き部分）をしっかりと狙ってマークしてください。
+`annotations` で丸（circle）やテキスト（text）を入れる場所は、**必ず「生徒が手書きの黒い線で書いた途中式や答え」の上またはその直近**に限定してください。
+あらかじめ印刷されている問題文や活字の上に丸をつけたりコメントを配置することは絶対に避けてください。
 
-【AI分析への必須指示 — 正答判定と詳細な解説について】
-1. 画像内にある全ての問題について、まずはあなた自身が正解を導き出し、生徒の書いた「黒い線の答え」と厳密に比較してください。
-2. 全問正解ではないのに「全問正解」と褒めるのは絶対にやめてください。
-3. 間違い（黒い線の解答ミス）を見つけたら、`hint` や `step_analysis` の中で、「(6)の問題は〜」のように具体的な問題番号と理由を明記して解説してください。
-4. もし学習者がまだ明確な回答を書いていない（白紙に近い）場合は、無理に canvas_marks を出力せず、全体コメントで「まずは君の考えを書いてみてね！」と促してください。
+【AI分析への必須指示 — 全体レポート（summary）とアノテーションについて】
+あなたは赤ペンを持つ情熱的で優しい先生です。最終的な答えの正誤だけでなく、「解答に至るまでのプロセス」を最も重視して採点・評価を行ってください。
 
-【AI分析への必須指示 — canvas_marks（先生の丸付け）について】
-一番重要なのは回答の過程を重視することです。以下の3種類の `type` を使い分けてください。
+採点と分析の手順：
+1. **プロセスの読み取り**:
+   - `【検知された思考時間】` から、どこで一番時間がかかったか（迷いや思考の深まり）を把握してください。
+   - `【学習者の筆記プロセス】` から、一度書いて消した部分（`isErased`）を把握し、「最初は合っていたのに消してしまった」「ここで試行錯誤した」という努力を汲み取ってください。
+2. **方針と計算ミスの分離**:
+   - 答えが間違っていても、途中の考え方や式（方針）が合っている場合は「方針は完璧だよ！」「考え方は合ってる！」と大きく褒めてください。単なる計算ミスや見落としであれば、そこを優しく指摘してください。
+3. **全体レポート（summary）の作成**:
+   - 分析したプロセス（迷い、書き直し、方針の正しさ）を踏まえ、学習者が「どのようなタイプか（例：慎重に考えるタイプ、直感的に解くタイプなど）」「どこに気をつけるべきか」を解説し、とにかくたくさん褒める長文のテキストを作成してください。
+4. **アノテーション（annotations）の配置**:
+   - 各問に対して `circle` または `underline` + `text` を配置します。
+
+以下の3種類の `type` を使い分けてください。
 
 ■ `type: "circle"` （正解マーク ○）：
-  - 正しい式や答え（黒い線の手書き）に対して使用してください。
-  - 丸が小さすぎたり細長くなるのを防ぐため、`box_2d` は「手書きの式・答え全体」をすっぽりと大きく囲むように、余裕を持った広い範囲を指定してください。文字の一部だけを指定しないでください。
+  - **必ず「= の右に書かれた手書きの答えの数字・式のみ」にだけ使用**してください。計算過程には絶対につけないでください。
+  - `box_2d` は答えの数字・式をピッタリと囲む正方形に近い形で指定してください（width と height の差を100以内に）。
 
 ■ `type: "underline"` （間違い・注目箇所の下線）：
-  - 間違っている「黒い線」の答えの下に赤い下線を引いてください。
+  - **間違った答えの真下**に引くか、あるいは**間違えた計算過程の部分**（計算ミスをした箇所）に引いてください。
 
 ■ `type: "text"` （先生の赤ペン書き入れ）：
-  - 先生がノートの余白に赤ペンで書くように、添削コメントを画像上に配置してください。
-  - 正解には「◎」、間違いの近くにはヒントを書いてください。
+  - 答えの丸や下線の直近に配置するほか、**プロセスに対する具体的な褒め言葉**（例：「ここでじっくり考えたのが素晴らしい！」「方針は合ってるよ！」など）を、該当する途中式の近くの余白にたくさん配置してください。
 
 ■ 座標と出力の絶対ルール：
-  - `box_2d` は必ず [ymin, xmin, ymax, xmax] の形式で、0から1000までの「整数 (Integer)」の配列として出力してください。小数は使用不可です。
-
-【AI分析への必須指示 — 解答手順とプロセス称賛について】
-1. `solving_approach`: 学習者の解法アプローチを1〜2文で要約。
-2. `step_analysis`: 学習者の解答プロセス（消しゴムでの修正も含める）を手順ごとに分解し記述。
-3. `strategy_evaluation`: 全体的な解法戦略を2〜3文で評価。
-4. 赤い線（消した痕跡）や思考の停止時間を見つけたら、結果が間違っていても「粘り強さ」や「修正する柔軟性」として全力で肯定し、称賛してください。
+  - `box_2d` は必ず [ymin, xmin, ymax, xmax] の形式で、0から1000までの「整数」として出力してください。小数は使用不可です。
 
 【レスポンス形式】
 必ず指定のJSONスキーマ（AnalysisResponse）に従って出力してください。日本語で回答してください。
-一番最初の `teacher_internal_reasoning` で、あなた自身の計算と答え合わせの思考プロセスを必ず言語化してから、その他のフィールドを出力してください。
 """
 
-    # 6. Gemini API キーのチェックと呼び出し
-    if not GEMINI_API_KEY or GEMINI_API_KEY.strip() == "" or GEMINI_API_KEY == "your_gemini_api_key_here":
-        print("Warning: GEMINI_API_KEY is not configured. Falling back to simulated local AI evaluation.")
-        # モック/シミュレーション用の結果を返す
-        has_erased = any(s.isErased for s in strokes)
-        has_pauses = len(pauses) > 0
-        
-        simulated_eval = "最後まで諦めずに解答を作り上げたプロセスが素晴らしいです！"
-        simulated_praises = [
-            "図や数式を書きながら、問題の構造を捉えようとしている姿勢が大変立派です。",
-        ]
-        
-        if has_erased:
-            simulated_eval += " 特に、一度書いたアプローチを消しゴムで消して再検討した形跡があり、自己分析能力が非常に高いです。"
-            simulated_praises.append("一度書いた数値やアプローチの誤りに自分で気づき、消しゴムで消して素早く自己修正できた柔軟性。")
+    if model == "nvidia":
+        if not NVIDIA_API_KEY:
+            print("Warning: NVIDIA_API_KEY is not configured.")
+            return AnalysisResponse(
+                annotations=[{"type": "text", "box_2d": [100, 100, 200, 500], "comment": "NVIDIA API Key is not configured."}]
+            )
+        try:
+            client = OpenAI(
+              base_url="https://integrate.api.nvidia.com/v1",
+              api_key=NVIDIA_API_KEY
+            )
             
-        if has_pauses:
-            simulated_praises.append(f"ペンの動きが止まった時間（最大 {max(p['duration_seconds'] for p in pauses)}秒）がありましたが、そこから逃げずに考え抜いた粘り強さ。")
-            
-        return AnalysisResponse(
-            overall_comment=simulated_eval + " (APIキー未設定のため、ローカルエンジンでプロセスログをシミュレート評価しています)",
-            praise_points=simulated_praises,
-            hint="直角を挟む2つの辺の長さ（底辺と高さ）の掛け算と、最後の「2で割る」処理の計算をもう一度ゆっくり見直してみましょう！",
-            thinker_type="粘り強い探索者 🔍" if has_pauses else "直感的ひらめき型 💡",
-            canvas_marks=[
-                {"type": "circle", "box_2d": [300, 300, 500, 500], "comment": "◎"},
-                {"type": "underline", "box_2d": [600, 300, 650, 500], "comment": "もう一度確認！"},
-                {"type": "text", "box_2d": [650, 510, 700, 700], "comment": "惜しい！あと少し！"}
-            ],
-            solving_approach="三角形の面積公式を適用しようとした（シミュレーション）",
-            step_analysis=[
-                StepAnalysis(step_number=1, description="辺の長さの確認", is_correct=True, observation="問題の条件を正しく読み取れています。"),
-                StepAnalysis(step_number=2, description="面積計算の適用", is_correct=True, observation="面積公式を知っている点が素晴らしいです。")
-            ],
-            strategy_evaluation="面積公式を使おうとする方針は正しいです。直角三角形の判定から底辺と高さを特定するステップを意識すると、さらに精度が上がるでしょう。（シミュレーション）"
-        )
-
-    try:
-        # 最新の google-genai クライアントを初期化
-        client = genai.Client(api_key=GEMINI_API_KEY)
-        
-        # Base64文字列からバイト列に変換
-        mime_type = 'image/png'  # デフォルトのフォールバック値
-        b64_str = image_b64
-        if b64_str.startswith("data:"):
-            header, b64_str = b64_str.split(",", 1)
-            if ";base64" in header:
-                mime_part = header.split(";")[0]
-                mime_type = mime_part.split(":")[1]
-        elif "," in b64_str:
-            header, b64_str = b64_str.split(",", 1)
-            
-        img_bytes = base64.b64decode(b64_str)
-        
-        # マジックバイトによる MIME タイプの動的検証（フォールバック）
-        if img_bytes.startswith(b'\x89PNG\r\n\x1a\n'):
+            b64_str = image_b64
             mime_type = 'image/png'
-        elif img_bytes.startswith(b'\xff\xd8'):
-            mime_type = 'image/jpeg'
-        elif img_bytes.startswith(b'GIF87a') or img_bytes.startswith(b'GIF89a'):
-            mime_type = 'image/gif'
-        elif img_bytes.startswith(b'RIFF') and len(img_bytes) > 12 and img_bytes[8:12] == b'WEBP':
-            mime_type = 'image/webp'
-        
-        # Structured Outputs (response_schema) を使って Gemini を呼び出し
-        contents = []
-        if img_bytes:
-            contents.append(
-                types.Part.from_bytes(
-                    data=img_bytes,
-                    mime_type=mime_type,
-                )
-            )
-        contents.append(prompt)
+            if b64_str.startswith("data:"):
+                header, b64_str = b64_str.split(",", 1)
+                if ";base64" in header:
+                    mime_part = header.split(";")[0]
+                    mime_type = mime_part.split(":")[1]
+            elif "," in b64_str:
+                header, b64_str = b64_str.split(",", 1)
 
-        response = client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=contents,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=AnalysisResponse,
-                system_instruction=(
-                    "あなたは学習者のノートに赤ペンで直接書き込みをする情熱的な先生です。"
-                    "試行錯誤のプロセス（筆記、消去、停止）を深く観察し、温かく具体的な日本語で添削してください。\n\n"
-                    "重要な制約:\n"
-                    "- canvas_marks の type: 'circle' は正しい答えにのみ使用\n"
-                    "- type: 'underline' は間違っている箇所に使用\n"
-                    "- type: 'text' は先生の赤ペンコメントとして画像上に直接配置\n"
-                    "- 全ての問題の回答を一つずつ確認し、漏れなくマークをつけてください\n"
-                    "- 間違った箇所に circle を絶対につけないでください"
-                ),
-                temperature=0.2,
+            prompt_for_nvidia = prompt + "\n\nOutput ONLY valid JSON matching the schema: {\"summary\": \"...\", \"annotations\": [{\"box_2d\": [ymin, xmin, ymax, xmax], \"type\": \"circle|underline|text\", \"comment\": \"...\"}]}."
+
+            response = client.chat.completions.create(
+              model="meta/llama-3.2-90b-vision-instruct",
+              messages=[
+                {
+                  "role": "user",
+                  "content": [
+                    {"type": "text", "text": prompt_for_nvidia},
+                    {
+                      "type": "image_url",
+                      "image_url": {
+                        "url": f"data:{mime_type};base64,{b64_str}"
+                      }
+                    }
+                  ]
+                }
+              ],
+              temperature=0.2,
+              max_tokens=1024,
             )
-        )
-        
-        # SDKが自動パースしたオブジェクト、またはJSONからの読み込み
-        if hasattr(response, 'parsed') and response.parsed:
-            return response.parsed
-        else:
-            data = json.loads(response.text)
+            
+            content = response.choices[0].message.content
+            # Llama 3 models sometimes wrap JSON in markdown code blocks
+            if content.startswith("```json"):
+                content = content[7:-3].strip()
+            elif content.startswith("```"):
+                content = content[3:-3].strip()
+            
+            data = json.loads(content)
             return AnalysisResponse(**data)
             
-    except Exception as e:
-        print(f"Error calling Gemini API: {e}")
-        # APIエラー時の詳細なフォールバック
-        return AnalysisResponse(
-            teacher_internal_reasoning=f"AIとの連携中にエラーが発生しました: {str(e)}",
-            overall_comment=f"手書きプロセスログは正常にサーバーに届きましたが、AI連携中にエラーが発生しました: {str(e)}",
-            praise_points=[
-                f"送信された総ストローク数 ({len(strokes)}件) をサーバーで正常に受信・処理できました。",
-                "書いた後に消しゴムでオブジェクト消去されたプロセスがログに正しく蓄積されています。"
-            ],
-            hint="サーバー側の環境変数 GEMINI_API_KEY が正しく設定されているか確認してください。",
-            thinker_type="システム確認中 🛠️",
-            canvas_marks=[],
-            solving_approach="",
-            step_analysis=[],
-            strategy_evaluation=""
-        )
+        except Exception as e:
+            print(f"Error calling NVIDIA API: {e}")
+            return AnalysisResponse(
+                annotations=[{"type": "text", "box_2d": [100, 100, 200, 500], "comment": f"NVIDIA API Error: {str(e)}"}]
+            )
+    else:
+        # 6. Gemini API キーのチェックと呼び出し
+        if not GEMINI_API_KEY or GEMINI_API_KEY.strip() == "" or GEMINI_API_KEY == "your_gemini_api_key_here":
+            print("Warning: GEMINI_API_KEY is not configured. Falling back to simulated local AI evaluation.")
+            # モック/シミュレーション用の結果を返す
+            has_erased = any(s.isErased for s in strokes)
+            has_pauses = len(pauses) > 0
+            
+            simulated_eval = "最後まで諦めずに解答を作り上げたプロセスが素晴らしいです！"
+            simulated_praises = [
+                "図や数式を書きながら、問題の構造を捉えようとしている姿勢が大変立派です。",
+            ]
+            
+            if has_erased:
+                simulated_eval += " 特に、一度書いたアプローチを消しゴムで消して再検討した形跡があり、自己分析能力が非常に高いです。"
+                simulated_praises.append("一度書いた数値やアプローチの誤りに自分で気づき、消しゴムで消して素早く自己修正できた柔軟性。")
+                
+            if has_pauses:
+                simulated_praises.append(f"ペンの動きが止まった時間（最大 {max(p['duration_seconds'] for p in pauses)}秒）がありましたが、そこから逃げずに考え抜いた粘り強さ。")
+                
+            return AnalysisResponse(
+                annotations=[
+                    {"type": "circle", "box_2d": [300, 300, 500, 500], "comment": "◎ 素晴らしいプロセスです！"},
+                    {"type": "underline", "box_2d": [600, 300, 650, 500], "comment": "もう一度確認！"},
+                    {"type": "text", "box_2d": [650, 510, 700, 700], "comment": "惜しい！あと少し！"}
+                ]
+            )
+
+        try:
+            # 最新の google-genai クライアントを初期化
+            client = genai.Client(api_key=GEMINI_API_KEY)
+            
+            # Base64文字列からバイト列に変換
+            mime_type = 'image/png'  # デフォルトのフォールバック値
+            b64_str = image_b64
+            if b64_str.startswith("data:"):
+                header, b64_str = b64_str.split(",", 1)
+                if ";base64" in header:
+                    mime_part = header.split(";")[0]
+                    mime_type = mime_part.split(":")[1]
+            elif "," in b64_str:
+                header, b64_str = b64_str.split(",", 1)
+                
+            img_bytes = base64.b64decode(b64_str)
+            
+            # マジックバイトによる MIME タイプの動的検証（フォールバック）
+            if img_bytes.startswith(b'\x89PNG\r\n\x1a\n'):
+                mime_type = 'image/png'
+            elif img_bytes.startswith(b'\xff\xd8'):
+                mime_type = 'image/jpeg'
+            elif img_bytes.startswith(b'GIF87a') or img_bytes.startswith(b'GIF89a'):
+                mime_type = 'image/gif'
+            elif img_bytes.startswith(b'RIFF') and len(img_bytes) > 12 and img_bytes[8:12] == b'WEBP':
+                mime_type = 'image/webp'
+            
+            # Structured Outputs (response_schema) を使って Gemini を呼び出し
+            contents = []
+            if img_bytes:
+                contents.append(
+                    types.Part.from_bytes(
+                        data=img_bytes,
+                        mime_type=mime_type,
+                    )
+                )
+            contents.append(prompt)
+
+            response = client.models.generate_content(
+                model='gemini-2.5-flash',
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=AnalysisResponse,
+                    system_instruction=(
+                        "あなたは赤ペンで丸付けをする情熱的な先生です。生徒の解答プロセス（迷いや書き直し）を深く分析してください。\n\n"
+                        "重要な制約:\n"
+                        "- 丸（circle）は必ず '= の右側に書かれた答えの数字・式' だけに使用。計算過程には絶対に使わない\n"
+                        "- 答えが間違っていても、計算過程や方針が合っていれば大いに褒めること\n"
+                        "- 迷った時間（思考時間）や消去履歴から、生徒の努力や弱点を読み取り、全体レポート（summary）を作成すること\n"
+                        "- text コメントは circle または underline のすぐ近く、または褒めるべき計算過程の横に配置\n"
+                        "- 各 box_2d は対象をタイトに囲むこと"
+                    ),
+                    temperature=0.2,
+                )
+            )
+            
+            # SDKが自動パースしたオブジェクト、またはJSONからの読み込み
+            if hasattr(response, 'parsed') and response.parsed:
+                return response.parsed
+            else:
+                data = json.loads(response.text)
+                return AnalysisResponse(**data)
+                
+        except Exception as e:
+            print(f"Error calling Gemini API: {e}")
+            return AnalysisResponse(
+                annotations=[
+                    {"type": "text", "box_2d": [100, 100, 200, 500], "comment": f"AI連携中にエラーが発生しました: {str(e)}"}
+                ]
+            )
 

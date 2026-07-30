@@ -3,7 +3,7 @@ import type { NextConfig } from "next";
 // ipconfig をターミナルで打ちIPv4 アドレスを記入
 const nextConfig: NextConfig = {
   /* config options here */
-  allowedDevOrigins: ["192.168.0.3", "10.120.6.245",'192.168.0.16',"10.119.60.205"],
+  allowedDevOrigins: ["192.168.0.3", "10.120.6.245",'192.168.0.16',"10.119.60.205","10.76.217.226"],
 
   async rewrites() {
     return [
