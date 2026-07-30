@@ -333,23 +333,53 @@ export default function Canvas({
         const x2 = imgX + (xmax / 1000) * img.width; const y2 = imgY + (ymax / 1000) * img.height;
         const color = ann.color || (ann.type === "circle" ? "#107c41" : "#e81123");
 
+        const fontName = 'var(--font-yomogi), "Yomogi", "Zen Kurenaido", cursive, sans-serif';
+
         if (ann.type === "circle") {
           const cx = (x1 + x2) / 2; const cy = (y1 + y2) / 2;
-          const size = Math.max(Math.abs(x2 - x1), Math.abs(y2 - y1), 40);
-          ctx.beginPath(); ctx.ellipse(cx, cy, size / 2 + 10, size / 2 + 10, 0, 0, Math.PI * 2);
-          ctx.strokeStyle = color; ctx.lineWidth = 4 / zoom; ctx.stroke();
-          if (ann.comment) { ctx.font = `bold ${Math.max(14, Math.min(20, img.height * 0.03))}px sans-serif`; ctx.fillStyle = color; ctx.textBaseline = "bottom"; ctx.fillText(ann.comment, cx + size / 2 + 10, cy - size / 2 + 10); }
+          const rx = Math.max(Math.abs(x2 - x1) / 2 + 10, 20);
+          const ry = Math.max(Math.abs(y2 - y1) / 2 + 10, 20);
+          
+          ctx.beginPath();
+          const segments = 30;
+          for (let i = 0; i <= segments + 2; i++) {
+            const angle = (i / segments) * Math.PI * 2;
+            const noiseX = Math.sin(i * 3.1) * 2;
+            const noiseY = Math.cos(i * 2.7) * 2;
+            const px = cx + (rx + noiseX) * Math.cos(angle);
+            const py = cy + (ry + noiseY) * Math.sin(angle);
+            if (i === 0) ctx.moveTo(px, py);
+            else ctx.lineTo(px, py);
+          }
+          ctx.strokeStyle = color; 
+          ctx.lineWidth = 3 / zoom; 
+          ctx.lineCap = "round";
+          ctx.lineJoin = "round";
+          ctx.stroke();
+
+          if (ann.comment) { 
+            ctx.font = `bold ${Math.max(16, Math.min(24, img.height * 0.035))}px ${fontName}`; 
+            ctx.fillStyle = color; 
+            ctx.textBaseline = "bottom"; 
+            ctx.fillText(ann.comment, cx + rx + 10, cy - ry + 15); 
+          }
         } else if (ann.type === "underline") {
           ctx.beginPath(); const segments = 12;
           for (let j = 0; j <= segments; j++) {
-            const px = x1 + (x2 - x1) * (j / segments); const py = y2 + 2 + (j % 2 === 0 ? 3 : -3) / zoom;
+            const px = x1 + (x2 - x1) * (j / segments); 
+            const py = y2 + 4 + Math.sin(j * 1.5) * 2 / zoom;
             if (j === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
           }
-          ctx.strokeStyle = color; ctx.lineWidth = 2.5 / zoom; ctx.stroke();
-          if (ann.comment) { ctx.font = `bold ${Math.max(11, Math.min(16, img.height * 0.022))}px sans-serif`; ctx.fillStyle = color; ctx.textBaseline = "top"; ctx.fillText(ann.comment, x1, y2 + 2 + 6 / zoom); }
+          ctx.strokeStyle = color; ctx.lineWidth = 3 / zoom; ctx.lineCap = "round"; ctx.stroke();
+          if (ann.comment) { 
+            ctx.font = `bold ${Math.max(14, Math.min(20, img.height * 0.028))}px ${fontName}`; 
+            ctx.fillStyle = color; ctx.textBaseline = "top"; 
+            ctx.fillText(ann.comment, x1, y2 + 8 + 6 / zoom); 
+          }
         } else if (ann.type === "text" && ann.comment) {
-          ctx.font = `bold ${Math.max(12, Math.min(20, img.height * 0.028))}px sans-serif`; ctx.fillStyle = color; ctx.textBaseline = "top";
-          ann.comment.split("\n").forEach((line, li) => ctx.fillText(line, x1, y1 + li * (Math.max(12, Math.min(20, img.height * 0.028)) * 1.3)));
+          ctx.font = `bold ${Math.max(16, Math.min(24, img.height * 0.035))}px ${fontName}`; 
+          ctx.fillStyle = color; ctx.textBaseline = "top";
+          ann.comment.split("\n").forEach((line, li) => ctx.fillText(line, x1, y1 + li * (Math.max(16, Math.min(24, img.height * 0.035)) * 1.3)));
         }
       });
     }

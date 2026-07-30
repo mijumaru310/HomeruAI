@@ -21,6 +21,8 @@ interface PageData {
   texts: CanvasText[];
   bgFileName: string | null;
   aiAnnotations: AIAnnotation[];
+  aiSummary?: string;
+  rawAiResponse?: any;
 }
 
 interface SectionData {
@@ -29,12 +31,7 @@ interface SectionData {
   pages: PageData[];
 }
 
-const mockAiFeedback = {
-  "総合評価": "最後まで諦めずに、自分で誤りに気づいて消しゴムで修正を試みながら解き進めたプロセスが素晴らしいです！",
-  "プロセスへの称賛ポイント": ["柔軟性。", "粘り強さ。", "本質的な理解のステップ。"],
-  "惜しい点（ヒント）": "計算の最後のステップで少しのズレが生じている可能性があります。",
-  "思考タイプラベル": "粘り強い探索者 🔍"
-};
+
 
 const colors = [
   { value: "#000000", label: "Black" },
@@ -80,6 +77,8 @@ interface RibbonHeaderProps {
   handleExportPDF: () => void;
   handleAnalyze: () => void;
   isAnalyzing: boolean;
+  selectedModel: "gemini" | "nvidia";
+  setSelectedModel: (model: "gemini" | "nvidia") => void;
 }
 
 const RibbonHeader = React.memo(({
@@ -88,7 +87,8 @@ const RibbonHeader = React.memo(({
   textStyle, setTextStyle, zoom, handleResetTransform, handleClear,
   showReplay, setShowReplay, isReplaying, setIsReplaying, setReplayedStrokes,
   activePageStrokes, handleSetBlank, fileInputRef, handleFileUpload,
-  handleExportPNG, handleExportPDF, handleAnalyze, isAnalyzing
+  handleExportPNG, handleExportPDF, handleAnalyze, isAnalyzing,
+  selectedModel, setSelectedModel
 }: RibbonHeaderProps) => {
   return (
     <header className="ribbon-header">
@@ -97,7 +97,16 @@ const RibbonHeader = React.memo(({
           <h1 className="onenote-header-title">HomeruAI Note</h1>
           <span className="onenote-header-badge">Homeru AI Mode</span>
         </div>
-        <div>
+        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+          <select 
+            value={selectedModel} 
+            onChange={(e) => setSelectedModel(e.target.value as "gemini" | "nvidia")}
+            style={{ fontSize: "12px", padding: "4px 8px", borderRadius: "4px", border: "1px solid #ccc" }}
+            disabled={isAnalyzing}
+          >
+            <option value="gemini">Gemini 1.5</option>
+            <option value="nvidia">NVIDIA (Llama 3.2)</option>
+          </select>
           <button onClick={handleAnalyze} disabled={activePageStrokes.length === 0 || isAnalyzing || isReplaying} className="btn btn-accent" style={{ backgroundColor: "#ffffff", color: "#5c2d91", borderColor: "#ffffff" }}>
             <Sparkles size={13} className={isAnalyzing ? "animate-spin" : ""} />
             {isAnalyzing ? "分析中..." : "思考をAI分析"}
@@ -275,6 +284,8 @@ export default function Home() {
 
   const [activeSectionId, setActiveSectionId] = useState<string>("sec_quick");
   const [activePageId, setActivePageId] = useState<string>("page_math");
+  
+  const [selectedModel, setSelectedModel] = useState<"gemini" | "nvidia">("gemini");
 
   const activeSection = sections.find(s => s.id === activeSectionId) || sections[0];
   const activePage = activeSection.pages.find(p => p.id === activePageId) || activeSection.pages[0];
@@ -294,7 +305,6 @@ export default function Home() {
   const [isReplaying, setIsReplaying] = useState(false);
   const [showReplay, setShowReplay] = useState(false);
 
-  const [aiAnalysisResult, setAiAnalysisResult] = useState<any>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -460,8 +470,6 @@ export default function Home() {
     }
     
     setIsAnalyzing(true);
-    setAiAnalysisResult(null);
-    // 前回のアノテーションをクリア
     updateActivePage(p => ({ ...p, aiAnnotations: [] }));
     
     try {
@@ -509,7 +517,8 @@ export default function Home() {
           imageWidth: refImage?.width,
           imageHeight: refImage?.height,
           imageX: refImage?.x || 0, // これを追加！ @0621
-          imageY: refImage?.y || 0  // これを追加！
+          imageY: refImage?.y || 0, // これを追加！
+          model: selectedModel
         })
       });
 
@@ -518,32 +527,59 @@ export default function Home() {
       }
 
       const result = await response.json();
-      setAiAnalysisResult(result);
 
-      // canvas_marks を画像相対のAIAnnotationとして保存
-      if (result.canvas_marks && Array.isArray(result.canvas_marks) && refImage) {
-         const annotations: AIAnnotation[] = result.canvas_marks.map((mark: any, i: number) => ({
-           id: `ai_ann_${Date.now()}_${i}`,
-           imageId: refImage.id,
-           type: mark.type === "circle" ? "circle" : mark.type === "underline" ? "underline" : mark.type === "text" ? "text" : "underline",
-           box_2d: mark.box_2d as [number, number, number, number],
-           comment: mark.comment || undefined,
-           color: mark.type === "circle" ? "#107c41" : "#e81123",
-         }));
-         updateActivePage(p => ({ ...p, aiAnnotations: annotations }));
+      let targetImage = refImage;
+      let addedVirtualImage = false;
+      let virtualImage: CanvasImage | null = null;
+      if (!targetImage && (ghostResult as any).virtualBounds) {
+        const bounds = (ghostResult as any).virtualBounds;
+        console.log("[AI Debug] virtualBounds from ghostRender:", bounds);
+        virtualImage = {
+          id: "virtual_bg",
+          url: "",
+          x: bounds.x,
+          y: bounds.y,
+          width: bounds.width,
+          height: bounds.height,
+          name: "virtual_bg"
+        };
+        targetImage = virtualImage;
+        addedVirtualImage = true;
+      }
+      console.log("[AI Debug] raw annotations from Gemini:", JSON.stringify(result.annotations));
+      console.log("[AI Debug] targetImage:", targetImage ? {id: targetImage.id, x: targetImage.x, y: targetImage.y, w: targetImage.width, h: targetImage.height} : null);
+
+      if (result.annotations && Array.isArray(result.annotations) && targetImage) {
+         const annotations: AIAnnotation[] = result.annotations.map((mark: any, i: number) => {
+           const [ymin, xmin, ymax, xmax] = mark.box_2d;
+           const wx1 = targetImage.x + (xmin / 1000) * targetImage.width;
+           const wy1 = targetImage.y + (ymin / 1000) * targetImage.height;
+           const wx2 = targetImage.x + (xmax / 1000) * targetImage.width;
+           const wy2 = targetImage.y + (ymax / 1000) * targetImage.height;
+           console.log(`[AI Debug] ann[${i}] type=${mark.type} box=[${mark.box_2d}] -> world: x1=${wx1.toFixed(0)}, y1=${wy1.toFixed(0)}, x2=${wx2.toFixed(0)}, y2=${wy2.toFixed(0)}`);
+           return {
+             id: `ai_ann_${Date.now()}_${i}`,
+             imageId: targetImage.id,
+             type: mark.type === "circle" ? "circle" : mark.type === "underline" ? "underline" : mark.type === "text" ? "text" : "underline",
+             box_2d: mark.box_2d as [number, number, number, number],
+             comment: mark.comment || undefined,
+             color: "#e81123",
+           };
+         });
+         updateActivePage(p => {
+           const filteredImages = p.images.filter(img => img.id !== "virtual_bg");
+           const nextImages = addedVirtualImage && virtualImage ? [...filteredImages, virtualImage] : filteredImages;
+           return { 
+             ...p, 
+             images: nextImages, 
+             aiAnnotations: annotations,
+             aiSummary: result.summary,
+             rawAiResponse: result
+           };
+         });
       }
     } catch (error) {
-      console.warn("FastAPI connection failed. Using mock fallback.", error);
-      await new Promise(resolve => setTimeout(resolve, 1500));
-      setAiAnalysisResult({
-        overall_comment: mockAiFeedback["総合評価"] + " (※API接続エラーのためモックデータを表示しています)",
-        praise_points: mockAiFeedback["プロセスへの称賛ポイント"],
-        hint: mockAiFeedback["惜しい点（ヒント）"],
-        thinker_type: mockAiFeedback["思考タイプラベル"],
-        solving_approach: "",
-        step_analysis: [],
-        strategy_evaluation: ""
-      });
+      console.warn("FastAPI connection failed.", error);
     } finally {
       setIsAnalyzing(false);
     }
@@ -580,6 +616,7 @@ export default function Home() {
         setReplayedStrokes={setReplayedStrokes} activePageStrokes={activePage.strokes}
         handleSetBlank={handleSetBlank} fileInputRef={fileInputRef} handleFileUpload={handleFileUpload}
         handleExportPNG={handleExportPNG} handleExportPDF={handleExportPDF} handleAnalyze={handleAnalyze} isAnalyzing={isAnalyzing}
+        selectedModel={selectedModel} setSelectedModel={setSelectedModel}
       />
       <div className="onenote-container">
         <Sidebar sections={sections} activeSectionId={activeSectionId} activePageId={activePageId} handleSectionSwitch={handleSectionSwitch} handlePageSwitch={handlePageSwitch} handleAddSection={handleAddSection} handleAddPage={handleAddPage} />
@@ -664,71 +701,75 @@ export default function Home() {
                   </div>
                 </div>
               )}
-            </div>
-            {aiAnalysisResult && (
-              <div style={{ width: "340px", borderLeft: "1px solid #e1dfdd", backgroundColor: "#fdfdfd", padding: "20px", overflowY: "auto", boxShadow: "-4px 0 12px rgba(0,0,0,0.05)", zIndex: 10 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" }}>
-                  <h2 style={{ fontSize: "16px", color: "#5c2d91", fontWeight: "bold", margin: 0, display: "flex", alignItems: "center", gap: "6px" }}><Sparkles size={18}/> AI フィードバック</h2>
-                  <button onClick={() => setAiAnalysisResult(null)} style={{ border: "none", background: "none", cursor: "pointer", fontSize: "20px", color: "#605e5c" }}>&times;</button>
-                </div>
-                
-                <div style={{ marginBottom: "20px", padding: "16px", backgroundColor: "#fff4ce", borderRadius: "12px", border: "1px solid #fde7a9", display: "flex", flexDirection: "column", alignItems: "center" }}>
-                  <div style={{ fontSize: "12px", color: "#795f0c", fontWeight: "bold", marginBottom: "8px" }}>思考タイプ</div>
-                  <div style={{ fontSize: "18px", color: "#a80000", fontWeight: "bold", textAlign: "center", display: "flex", alignItems: "center", gap: "8px" }}><Award size={20}/>{aiAnalysisResult.thinker_type || aiAnalysisResult["思考タイプラベル"]}</div>
-                </div>
 
-                <div style={{ marginBottom: "20px" }}>
-                  <div style={{ fontSize: "14px", fontWeight: "bold", color: "#323130", marginBottom: "8px" }}>全体評価</div>
-                  <p style={{ fontSize: "14px", color: "#605e5c", lineHeight: "1.6", margin: 0 }}>{aiAnalysisResult.overall_comment || aiAnalysisResult["総合評価"]}</p>
-                </div>
-
-                {aiAnalysisResult.solving_approach && (
-                  <div style={{ marginBottom: "20px", padding: "14px", backgroundColor: "#f0f6ff", borderRadius: "10px", border: "1px solid #d0e2ff" }}>
-                    <div style={{ fontSize: "13px", fontWeight: "bold", color: "#0043ce", marginBottom: "6px", display: "flex", alignItems: "center", gap: "5px" }}>
-                      <Code size={14} /> 解法アプローチ
+              {/* AI Summary and Debug Panel */}
+              {activePage.aiSummary && (
+                <div style={{
+                  position: "absolute",
+                  bottom: "32px",
+                  right: "32px",
+                  width: "400px",
+                  backgroundColor: "#ffffff",
+                  borderRadius: "16px",
+                  boxShadow: "0 12px 36px rgba(0,0,0,0.15)",
+                  padding: "24px",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "16px",
+                  zIndex: 40,
+                  border: "1px solid #e1dfdd",
+                }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px", color: "#5c2d91", fontWeight: "bold", fontSize: "18px" }}>
+                      <Bot size={24} />
+                      先生からの全体コメント
                     </div>
-                    <p style={{ fontSize: "13px", color: "#4a4a4a", lineHeight: "1.6", margin: 0 }}>{aiAnalysisResult.solving_approach}</p>
+                    <button 
+                      onClick={() => updateActivePage(p => ({ ...p, aiSummary: undefined }))}
+                      style={{ background: "none", border: "none", cursor: "pointer", color: "#605e5c", padding: "4px" }}
+                    >
+                      <Trash2 size={18} />
+                    </button>
                   </div>
-                )}
-
-                {aiAnalysisResult.step_analysis && aiAnalysisResult.step_analysis.length > 0 && (
-                  <div style={{ marginBottom: "20px" }}>
-                    <div style={{ fontSize: "14px", fontWeight: "bold", color: "#323130", marginBottom: "10px" }}>📝 手順分析</div>
-                    {aiAnalysisResult.step_analysis.map((step: any, i: number) => (
-                      <div key={i} style={{ marginBottom: "10px", padding: "10px 12px", backgroundColor: step.is_correct ? "#f0fdf4" : "#fff5f5", borderRadius: "8px", border: `1px solid ${step.is_correct ? "#bbf7d0" : "#fecaca"}` }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "4px" }}>
-                          <span style={{ fontSize: "14px" }}>{step.is_correct ? "✅" : "⚠️"}</span>
-                          <span style={{ fontSize: "12px", fontWeight: "bold", color: "#323130" }}>手順 {step.step_number}</span>
-                        </div>
-                        <div style={{ fontSize: "12px", color: "#4a4a4a", lineHeight: "1.5", marginBottom: "3px" }}>{step.description}</div>
-                        <div style={{ fontSize: "11px", color: "#6b7280", lineHeight: "1.4", fontStyle: "italic" }}>{step.observation}</div>
-                      </div>
-                    ))}
+                  
+                  <div style={{ 
+                    color: "#323130", 
+                    fontSize: "15px", 
+                    lineHeight: "1.6", 
+                    maxHeight: "300px", 
+                    overflowY: "auto",
+                    whiteSpace: "pre-wrap"
+                  }}>
+                    {activePage.aiSummary}
                   </div>
-                )}
 
-                <div style={{ marginBottom: "20px" }}>
-                  <div style={{ fontSize: "14px", fontWeight: "bold", color: "#323130", marginBottom: "8px" }}>素晴らしいポイント</div>
-                  <ul style={{ paddingLeft: "24px", margin: 0 }}>
-                    {(aiAnalysisResult.praise_points || aiAnalysisResult["プロセスへの称賛ポイント"] || []).map((pt: string, i: number) => (
-                      <li key={i} style={{ fontSize: "14px", color: "#605e5c", marginBottom: "8px", lineHeight: "1.5" }}>{pt}</li>
-                    ))}
-                  </ul>
+                  <div style={{ borderTop: "1px solid #edebe9", paddingTop: "12px", display: "flex", justifyContent: "flex-end" }}>
+                    <button
+                      onClick={() => {
+                        if (!activePage.rawAiResponse) return;
+                        const blob = new Blob([JSON.stringify(activePage.rawAiResponse, null, 2)], { type: 'application/json' });
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = `debug_ai_${activePage.id}.json`;
+                        a.click();
+                        URL.revokeObjectURL(url);
+                      }}
+                      style={{
+                        display: "flex", alignItems: "center", gap: "6px",
+                        background: "#f3f2f1", color: "#605e5c", border: "none",
+                        padding: "8px 12px", borderRadius: "4px", fontSize: "12px",
+                        cursor: "pointer", fontWeight: "bold"
+                      }}
+                    >
+                      <Download size={14} />
+                      AI生データ(JSON)をダウンロード
+                    </button>
+                  </div>
                 </div>
+              )}
+            </div>
 
-                {aiAnalysisResult.strategy_evaluation && (
-                  <div style={{ marginBottom: "20px", padding: "14px", backgroundColor: "#fdf4ff", borderRadius: "10px", border: "1px solid #e9d5ff" }}>
-                    <div style={{ fontSize: "13px", fontWeight: "bold", color: "#7c3aed", marginBottom: "6px" }}>🎯 方針評価</div>
-                    <p style={{ fontSize: "13px", color: "#4a4a4a", lineHeight: "1.6", margin: 0 }}>{aiAnalysisResult.strategy_evaluation}</p>
-                  </div>
-                )}
-
-                <div style={{ marginTop: "24px", padding: "16px", backgroundColor: "#e1dfdd", borderRadius: "12px" }}>
-                  <div style={{ fontSize: "14px", fontWeight: "bold", color: "#323130", marginBottom: "8px", display: "flex", alignItems: "center", gap: "6px" }}><Lightbulb size={16} color="#0078d4" /> ヒント・アドバイス</div>
-                  <p style={{ fontSize: "14px", color: "#605e5c", lineHeight: "1.6", margin: 0 }}>{aiAnalysisResult.hint || aiAnalysisResult["惜しい点_ヒント"] || aiAnalysisResult["惜しい点（ヒント）"]}</p>
-                </div>
-              </div>
-            )}
           </div>
         </div>
       </div>

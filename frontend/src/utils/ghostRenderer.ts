@@ -1,7 +1,13 @@
 import { Stroke, CanvasImage } from "../types/canvas";
 import { getStroke } from "perfect-freehand";
 
-export const generateGhostRender = async (strokes: Stroke[], refImage: CanvasImage | null): Promise<{ image: string }> => {
+export const generateGhostRender = async (
+  strokes: Stroke[],
+  refImage: CanvasImage | null
+): Promise<{
+  image: string;
+  virtualBounds?: { x: number; y: number; width: number; height: number };
+}> => {
   // 背景画像がない場合は、ストローク情報のみを白いキャンバスに描画して送信する
   if (!refImage) {
     console.warn("背景画像が設定されていません。ストロークデータのみで画像を生成します。");
@@ -34,6 +40,8 @@ export const generateGhostRender = async (strokes: Stroke[], refImage: CanvasIma
     const margin = 40;
     let width = maxX - minX + margin * 2;
     let height = maxY - minY + margin * 2;
+    const origWidth = width;
+    const origHeight = height;
     
     // オフセット（左上の座標）
     const offsetX = minX - margin;
@@ -95,7 +103,10 @@ export const generateGhostRender = async (strokes: Stroke[], refImage: CanvasIma
       ctx.fill();
     }
 
-    return { image: canvas.toDataURL("image/jpeg", 0.8) };
+    return { 
+      image: canvas.toDataURL("image/jpeg", 0.8),
+      virtualBounds: { x: offsetX, y: offsetY, width: origWidth, height: origHeight }
+    };
   }
 
   const canvas = document.createElement("canvas");
