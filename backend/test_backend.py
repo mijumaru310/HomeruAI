@@ -43,18 +43,39 @@ except Exception as e:
     import traceback
     traceback.print_exc()
 
-# Test with valid image
-valid_b64 = base64.b64encode(b"dummy image").decode('utf-8')
-req3 = {
-    "questionId": "test",
-    "strokes": [dummy_stroke],
-    "image": valid_b64
+# Test 4: Arbitrary question with free text (questionText)
+req4 = {
+    "questionId": "input_custom",
+    "questionText": "方程式 5x - 8 = 22 を解け。",
+    "praiseMode": "super_praise",
+    "strokes": [
+        {
+            "strokeId": "s1",
+            "type": "draw",
+            "startTime": 100,
+            "endTime": 300,
+            "points": [{"x": 50, "y": 100, "p": 1, "t": 100}, {"x": 150, "y": 100, "p": 1, "t": 300}]
+        },
+        {
+            "strokeId": "s2",
+            "type": "draw",
+            "startTime": 1000,
+            "endTime": 1500,
+            "points": [{"x": 50, "y": 150, "p": 1, "t": 1000}, {"x": 150, "y": 150, "p": 1, "t": 1500}]
+        }
+    ],
+    "image": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
 }
 
 try:
-    response = client.post("/api/analyze", json=req3)
-    print("Response status 3:", response.status_code)
-    print("Response text 3:", response.text)
+    response = client.post("/api/analyze", json=req4)
+    print("Response status 4 (Arbitrary Question):", response.status_code)
+    data = response.json()
+    print("Badge:", data.get("thought_type_badge"))
+    print("Recognized Question:", data.get("recognized_content", {}).get("recognized_question"))
+    print("Praise points:", data.get("praise_points"))
+    print("Encouragement:", data.get("encouragement_message"))
 except Exception as e:
     import traceback
     traceback.print_exc()
+

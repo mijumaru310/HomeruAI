@@ -10,3 +10,10 @@ __pycache__/
 
 # Local debug outputs
 temp_renders/
+app/request_log.json
+app/debug_sent_image.*
+
+# Pseudonymized local research data (never commit participant data)
+data/
+exports/
+models/*.json

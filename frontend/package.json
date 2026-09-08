@@ -11,7 +11,8 @@
   "dependencies": {
     "jspdf": "^4.2.1",
     "lucide-react": "^1.18.0",
-    "next": "16.2.9",
+    "next": "^16.3.4",
+    "pdfjs-dist": "^5.4.296",
     "perfect-freehand": "^1.2.3",
     "react": "19.2.4",
     "react-dom": "19.2.4"
@@ -21,7 +22,7 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
-    "eslint-config-next": "16.2.9",
+    "eslint-config-next": "^16.3.4",
     "typescript": "^5"
   }
 }

@@ -1,6 +1,7 @@
-fastapi>=0.110.0
-uvicorn>=0.28.0
-pydantic>=2.6.0
-pillow>=10.2.0
-google-genai>=0.1.1
-python-dotenv>=1.0.1
+fastapi==0.141.1
+uvicorn==0.52.4
+pydantic==2.13.5
+pillow==12.3.0
+google-genai==2.22.0
+python-dotenv==1.2.3
+

@@ -1,29 +1,66 @@
 "use client";
 
-import React, { useState, useRef, useCallback } from "react";
+import React, { useState, useRef, useCallback, useEffect } from "react";
 import Canvas from "../components/Canvas";
 import ReplayPlayer from "../components/ReplayPlayer";
-import { Stroke, CanvasImage, CanvasText, AIAnnotation } from "../types/canvas";
+import ProblemRegionSelector, { NormalizedRegion } from "../components/ProblemRegionSelector";
+import LearningDashboard from "../components/LearningDashboard";
+import DebugPanel from "../components/DebugPanel";
+import { Stroke, CanvasImage, CanvasText, AIAnnotation, RecognizedContent, AnalysisResponseData, ProcessMetrics, LearnerState, AdaptiveIntervention, LearnerDashboardData, PointerDiagnostics } from "../types/canvas";
 import { jsPDF } from "jspdf";
 import { 
-  PenTool, Eraser, Sparkles, Trash2, Code, ChevronDown, ChevronUp, HelpCircle,
-  Lightbulb, Award, Upload, FileText, Maximize2, Plus, Eye, EyeOff, Move,
-  Type, Scissors, Download, Bold, Italic, Underline, ImagePlus,Bot, Loader2, Undo
+  PenTool, Eraser, Sparkles, Trash2, 
+  Award, FileText, Maximize2, Plus, Eye, EyeOff, Move,
+  Type, Scissors, Download, Bold, Italic, Underline, ImagePlus, Bot, Loader2,
+  CheckCircle2, X, Sparkle, Undo2, Cloud, CloudOff
+  , BarChart3, Bug, Flame
 } from "lucide-react";
 import { generateGhostRender } from "../utils/ghostRenderer";
+import { loadWorkspace, saveWorkspace } from "../utils/notebookStorage";
+import { undoLastStrokeAction } from "../utils/strokeHistory";
+import { renderPdfPages } from "../utils/pdfImporter";
+import { createId, getOrCreateLearnerId, recordStudyEvent, requestLearnerDashboard, requestPauseAssist } from "../utils/adaptiveLearning";
+
+export const PRESET_QUESTIONS = [
+  { id: "custom", label: "📝 白紙ノート (手書きで自由に解く)", title: "自由ノート", text: "" },
+  { id: "input_custom", label: "✏️ 自由な問題を入力する...", title: "任意の問題", text: "" },
+  { id: "photo_problem", label: "📸 教材・プリント写真を貼る", title: "教材プリント", text: "" },
+  { id: "q_01", label: "📐 直角三角形の面積 (基本)", title: "直角三角形の面積", text: "【問題】辺の長さが a=6, b=8, c=10 の\n直角三角形の面積を求めよ。" },
+  { id: "q_02", label: "🔢 一次方程式の計算 (基本)", title: "一次方程式の計算", text: "【問題】方程式を解け。\n3x + 5 = 20" },
+  { id: "q_03", label: "🏷️ 割合と割引の計算", title: "割合と割引の計算", text: "【問題】定価 2,400円の品物が 30%引き で\n売られています。売値はいくら？" },
+];
 
 interface PageData {
   id: string;
   title: string;
   date: string;
+  questionText?: string;
   strokes: Stroke[];
   images: CanvasImage[];
   texts: CanvasText[];
   bgFileName: string | null;
   aiAnnotations: AIAnnotation[];
+  thoughtTypeBadge?: string;
+  praisePoints?: string[];
+  encouragementMessage?: string;
+  recognizedContent?: RecognizedContent;
   aiSummary?: string;
-  rawAiResponse?: any;
+  analysisSource?: "ai" | "hybrid" | "local_fallback";
+  analysisNotice?: string;
+  providerErrorCategory?: string;
+  processMetrics?: ProcessMetrics;
+  learnerState?: LearnerState;
+  intervention?: AdaptiveIntervention;
+  recognitionConfidence?: number;
+  recognitionUncertainties?: string[];
+  skillTags?: string[];
+  sourceType?: "typed" | "photo" | "pdf" | "blank" | "preset";
+  hintCount?: number;
+  feedbackRating?: "helpful" | "not_for_me";
+  problemRegion?: NormalizedRegion;
+  rawAiResponse?: unknown;
 }
+
 
 interface SectionData {
   id: string;
@@ -46,6 +83,30 @@ const colors = [
   { value: "#e3008c", label: "Magenta" },
 ];
 
+async function prepareSourceImage(dataUrl: string, region?: NormalizedRegion): Promise<string> {
+  const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+    const candidate = new Image();
+    candidate.onload = () => resolve(candidate);
+    candidate.onerror = () => reject(new Error("問題画像を分析用に準備できませんでした。"));
+    candidate.src = dataUrl;
+  });
+  const cropX = region ? Math.round(image.naturalWidth * region.x) : 0;
+  const cropY = region ? Math.round(image.naturalHeight * region.y) : 0;
+  const cropWidth = region ? Math.max(1, Math.round(image.naturalWidth * region.width)) : image.naturalWidth;
+  const cropHeight = region ? Math.max(1, Math.round(image.naturalHeight * region.height)) : image.naturalHeight;
+  const maxEdge = 1600;
+  const scale = Math.min(1, maxEdge / Math.max(cropWidth, cropHeight));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(cropWidth * scale));
+  canvas.height = Math.max(1, Math.round(cropHeight * scale));
+  const context = canvas.getContext("2d", { alpha: false });
+  if (!context) throw new Error("問題画像を分析用に変換できませんでした。");
+  context.fillStyle = "#ffffff";
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.drawImage(image, cropX, cropY, cropWidth, cropHeight, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL("image/jpeg", 0.9);
+}
+
 interface RibbonHeaderProps {
   activeTab: string;
   setActiveTab: (tab: string) => void;
@@ -61,7 +122,6 @@ interface RibbonHeaderProps {
   setEraserWidth: (w: number) => void;
   textStyle: { fontSize: number; color: string; fontWeight: "normal" | "bold"; fontStyle: "normal" | "italic"; textDecoration: "none" | "underline"; };
   setTextStyle: React.Dispatch<React.SetStateAction<{ fontSize: number; color: string; fontWeight: "normal" | "bold"; fontStyle: "normal" | "italic"; textDecoration: "none" | "underline"; }>>;
-  zoom: number;
   handleResetTransform: () => void;
   handleClear: () => void;
   showReplay: boolean;
@@ -70,25 +130,34 @@ interface RibbonHeaderProps {
   setIsReplaying: (replaying: boolean) => void;
   setReplayedStrokes: React.Dispatch<React.SetStateAction<Stroke[]>>;
   activePageStrokes: Stroke[];
-  handleSetBlank: () => void;
   fileInputRef: React.RefObject<HTMLInputElement | null>;
   handleFileUpload: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  onSelectProblemRegion: () => void;
+  canSelectProblemRegion: boolean;
+  hasProblemRegion: boolean;
   handleExportPNG: () => void;
   handleExportPDF: () => void;
   handleAnalyze: () => void;
   isAnalyzing: boolean;
-  selectedModel: "gemini" | "nvidia";
-  setSelectedModel: (model: "gemini" | "nvidia") => void;
+  selectedPreset: string;
+  onSelectPreset: (presetId: string) => void;
+  onOpenCustomProblemModal: () => void;
+  praiseMode: "super_praise" | "support" | "challenge";
+  setPraiseMode: (mode: "super_praise" | "support" | "challenge") => void;
+  handleUndo: () => void;
+  saveStatus: "loading" | "saving" | "saved" | "error";
 }
 
 const RibbonHeader = React.memo(({
   activeTab, setActiveTab, tool, setTool, eraserMode, setEraserMode,
   brushColor, setBrushColor, brushWidth, setBrushWidth, eraserWidth, setEraserWidth,
-  textStyle, setTextStyle, zoom, handleResetTransform, handleClear,
+  textStyle, setTextStyle, handleResetTransform, handleClear,
   showReplay, setShowReplay, isReplaying, setIsReplaying, setReplayedStrokes,
-  activePageStrokes, handleSetBlank, fileInputRef, handleFileUpload,
+  activePageStrokes, fileInputRef, handleFileUpload,
+  onSelectProblemRegion, canSelectProblemRegion, hasProblemRegion,
   handleExportPNG, handleExportPDF, handleAnalyze, isAnalyzing,
-  selectedModel, setSelectedModel
+  selectedPreset, onSelectPreset,
+  onOpenCustomProblemModal, praiseMode, setPraiseMode, handleUndo, saveStatus
 }: RibbonHeaderProps) => {
   return (
     <header className="ribbon-header">
@@ -96,23 +165,84 @@ const RibbonHeader = React.memo(({
         <div className="onenote-header-title-area">
           <h1 className="onenote-header-title">HomeruAI Note</h1>
           <span className="onenote-header-badge">Homeru AI Mode</span>
+          <span title={saveStatus === "error" ? "この端末に保存できませんでした" : "ノートはこの端末に自動保存されます"} style={{ display: "inline-flex", alignItems: "center", gap: "4px", fontSize: "11px", color: saveStatus === "error" ? "#fecaca" : "#e1dfdd" }}>
+            {saveStatus === "error" ? <CloudOff size={13} /> : <Cloud size={13} />}
+            {saveStatus === "loading" ? "復元中" : saveStatus === "saving" ? "保存中" : saveStatus === "error" ? "保存できません" : "保存済み"}
+          </span>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-          <select 
-            value={selectedModel} 
-            onChange={(e) => setSelectedModel(e.target.value as "gemini" | "nvidia")}
-            style={{ fontSize: "12px", padding: "4px 8px", borderRadius: "4px", border: "1px solid #ccc" }}
-            disabled={isAnalyzing}
+        <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+          {/* 問題プリセット選択 */}
+          <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+            <span style={{ fontSize: "11px", color: "#e1dfdd", fontWeight: "bold" }}>問題:</span>
+            <select
+              value={selectedPreset}
+              onChange={(e) => onSelectPreset(e.target.value)}
+              style={{ fontSize: "12px", padding: "4px 8px", borderRadius: "4px", border: "1px solid #797775", backgroundColor: "#ffffff", color: "#323130" }}
+              disabled={isAnalyzing}
+            >
+              {PRESET_QUESTIONS.map(q => (
+                <option key={q.id} value={q.id}>{q.label}</option>
+              ))}
+            </select>
+            <button
+              onClick={onOpenCustomProblemModal}
+              title="自由な問題文を入力・編集"
+              style={{
+                fontSize: "11px",
+                padding: "4px 8px",
+                borderRadius: "4px",
+                border: "1px solid #797775",
+                backgroundColor: "#ffffff",
+                color: "#323130",
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                gap: "2px"
+              }}
+              disabled={isAnalyzing}
+            >
+              ✏️ 入力
+            </button>
+          </div>
+
+          {/* ほめモード選択 */}
+          <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+            <span style={{ fontSize: "11px", color: "#e1dfdd", fontWeight: "bold" }}>褒め方:</span>
+            <select
+              value={praiseMode}
+              onChange={(e) => setPraiseMode(e.target.value as "super_praise" | "support" | "challenge")}
+              style={{ fontSize: "12px", padding: "4px 8px", borderRadius: "4px", border: "1px solid #797775", backgroundColor: "#ffffff", color: "#323130" }}
+              disabled={isAnalyzing}
+            >
+              <option value="super_praise">💖 ほめちぎり (やる気UP!)</option>
+              <option value="support">🤝 いっしょに伴走 (標準)</option>
+              <option value="challenge">🎯 チャレンジ (気づき重視)</option>
+            </select>
+          </div>
+
+          <span style={{ fontSize: "11px", padding: "4px 8px", borderRadius: "999px", background: "#ede9fe", color: "#5b21b6", fontWeight: 700 }}>
+            Gemini認識 + プロセス分析
+          </span>
+
+          <button 
+            onClick={handleAnalyze} 
+            disabled={activePageStrokes.length === 0 || isAnalyzing || isReplaying} 
+            className="btn btn-accent" 
+            style={{ 
+              backgroundColor: "#ffb900", 
+              color: "#323130", 
+              borderColor: "#ffb900", 
+              fontWeight: "bold",
+              boxShadow: "0 2px 8px rgba(0,0,0,0.2)",
+              padding: "6px 14px"
+            }}
           >
-            <option value="gemini">Gemini 1.5</option>
-            <option value="nvidia">NVIDIA (Llama 3.2)</option>
-          </select>
-          <button onClick={handleAnalyze} disabled={activePageStrokes.length === 0 || isAnalyzing || isReplaying} className="btn btn-accent" style={{ backgroundColor: "#ffffff", color: "#5c2d91", borderColor: "#ffffff" }}>
-            <Sparkles size={13} className={isAnalyzing ? "animate-spin" : ""} />
-            {isAnalyzing ? "分析中..." : "思考をAI分析"}
+            <Sparkles size={15} className={isAnalyzing ? "animate-spin" : ""} />
+            {isAnalyzing ? "思考を読み解き中..." : "ほめるAIで採点！"}
           </button>
         </div>
       </div>
+
 
       <div className="ribbon-tabs">
         <button className={`ribbon-tab ${activeTab === "home" ? "active" : ""}`} onClick={() => setActiveTab("home")}>ホーム</button>
@@ -196,6 +326,9 @@ const RibbonHeader = React.memo(({
             </div>
 
             <div className="ribbon-group">
+              <button onClick={handleUndo} disabled={isReplaying || activePageStrokes.length === 0} className="btn" style={{ flexDirection: "column", height: "42px", gap: "2px", border: "none" }} title="ひとつ前に戻す (Ctrl/Cmd+Z)">
+                <Undo2 size={14} /> <span style={{ fontSize: "8px" }}>元に戻す</span>
+              </button>
               <button onClick={handleResetTransform} className="btn" style={{ flexDirection: "column", height: "42px", gap: "2px", border: "none" }} title="Reset Zoom">
                 <Maximize2 size={14} /> <span style={{ fontSize: "8px" }}>等倍リセット</span>
               </button>
@@ -210,7 +343,7 @@ const RibbonHeader = React.memo(({
               </button>
               {showReplay && activePageStrokes.length > 0 && (
                 <div style={{ marginLeft: "8px" }}>
-                  <ReplayPlayer strokes={activePageStrokes} isReplaying={isReplaying} setIsReplaying={setIsReplaying} setReplayedStrokes={setReplayedStrokes} />
+                  <ReplayPlayer key={`${activePageStrokes.length}-${activePageStrokes.at(-1)?.endTime ?? 0}`} strokes={activePageStrokes} setIsReplaying={setIsReplaying} setReplayedStrokes={setReplayedStrokes} />
                 </div>
               )}
             </div>
@@ -221,7 +354,10 @@ const RibbonHeader = React.memo(({
               <button onClick={() => fileInputRef.current?.click()} className="btn" style={{ flexDirection: "column", height: "42px", gap: "2px", border: "none" }}>
                 <ImagePlus size={14} /> <span style={{ fontSize: "8px" }}>画像を挿入</span>
               </button>
-              <input ref={fileInputRef} type="file" accept="image/*" multiple onChange={handleFileUpload} style={{ display: "none" }} />
+              <input ref={fileInputRef} type="file" accept="image/*,application/pdf" multiple onChange={handleFileUpload} style={{ display: "none" }} />
+              <button onClick={onSelectProblemRegion} disabled={!canSelectProblemRegion} className={`btn ${hasProblemRegion ? "btn-active" : ""}`} style={{ flexDirection: "column", height: "42px", gap: "2px", border: "none" }} title="複数の問題がある画像から分析対象を選択">
+                <Scissors size={14} /> <span style={{ fontSize: "8px" }}>{hasProblemRegion ? "範囲選択済み" : "問題範囲"}</span>
+              </button>
               
               <button onClick={handleExportPNG} className="btn" style={{ flexDirection: "column", height: "42px", gap: "2px", border: "none", marginLeft: "16px" }}>
                 <Download size={14} /> <span style={{ fontSize: "8px" }}>PNG保存</span>
@@ -247,23 +383,33 @@ const RibbonHeader = React.memo(({
 });
 RibbonHeader.displayName = "RibbonHeader";
 
-const Sidebar = React.memo(({ sections, activeSectionId, activePageId, handleSectionSwitch, handlePageSwitch, handleAddSection, handleAddPage }: any) => {
-  const activeSection = sections.find((s:any) => s.id === activeSectionId) || sections[0];
+interface SidebarProps {
+  sections: SectionData[];
+  activeSectionId: string;
+  activePageId: string;
+  handleSectionSwitch: (sectionId: string) => void;
+  handlePageSwitch: (pageId: string) => void;
+  handleAddSection: () => void;
+  handleAddPage: () => void;
+}
+
+const Sidebar = React.memo(({ sections, activeSectionId, activePageId, handleSectionSwitch, handlePageSwitch, handleAddSection, handleAddPage }: SidebarProps) => {
+  const activeSection = sections.find(section => section.id === activeSectionId) || sections[0];
   return (
     <>
       <aside className="section-sidebar">
         <button onClick={handleAddSection} className="sidebar-add-btn"><Plus size={14} /><span>セクション追加</span></button>
         <ul className="sidebar-list">
-          {sections.map((s:any) => (
-            <li key={s.id} onClick={() => handleSectionSwitch(s.id)} className={`section-item ${s.id === activeSectionId ? "active" : ""}`}><span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.title}</span></li>
+          {sections.map(section => (
+            <li key={section.id} onClick={() => handleSectionSwitch(section.id)} className={`section-item ${section.id === activeSectionId ? "active" : ""}`}><span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{section.title}</span></li>
           ))}
         </ul>
       </aside>
       <aside className="page-sidebar">
         <button onClick={handleAddPage} className="sidebar-add-btn"><Plus size={14} /><span>ページ追加</span></button>
         <ul className="sidebar-list">
-          {activeSection.pages.map((p:any) => (
-            <li key={p.id} onClick={() => handlePageSwitch(p.id)} className={`page-item ${p.id === activePageId ? "active" : ""}`}><span className="page-item-title">{p.title || "無題のページ"}</span><span className="page-item-date">{p.date.split(" ")[0]}</span></li>
+          {activeSection.pages.map(page => (
+            <li key={page.id} onClick={() => handlePageSwitch(page.id)} className={`page-item ${page.id === activePageId ? "active" : ""}`}><span className="page-item-title">{page.title || "無題のページ"}</span><span className="page-item-date">{page.date.split(" ")[0]}</span></li>
           ))}
         </ul>
       </aside>
@@ -277,7 +423,30 @@ export default function Home() {
     {
       id: "sec_quick", title: "クイック ノート",
       pages: [
-        { id: "page_math", title: "数学ノート", date: "2026/06/17 水曜日 10:00", strokes: [], images: [], texts: [], bgFileName: null, aiAnnotations: [] }
+        { 
+          id: "page_math", 
+          title: "直角三角形の面積", 
+          date: "2026/09/04 金曜日 16:00", 
+          strokes: [], 
+          images: [], 
+          texts: [
+            {
+              id: "txt_preset_init",
+              text: "【問題】辺の長さが a=6, b=8, c=10 の\n直角三角形の面積を求めよ。",
+              x: 60,
+              y: 40,
+              fontSize: 22,
+              color: "#1e293b",
+              fontWeight: "bold",
+              fontStyle: "normal",
+              textDecoration: "none"
+            }
+          ], 
+          bgFileName: null, 
+          aiAnnotations: [],
+          sourceType: "preset",
+          hintCount: 0,
+        }
       ]
     }
   ]);
@@ -285,13 +454,21 @@ export default function Home() {
   const [activeSectionId, setActiveSectionId] = useState<string>("sec_quick");
   const [activePageId, setActivePageId] = useState<string>("page_math");
   
-  const [selectedModel, setSelectedModel] = useState<"gemini" | "nvidia">("gemini");
+  const [selectedPreset, setSelectedPreset] = useState<string>("q_01");
+  const [praiseMode, setPraiseMode] = useState<"super_praise" | "support" | "challenge">("super_praise");
+  const [showPraiseModal, setShowPraiseModal] = useState<boolean>(false);
+  const [showCustomProblemModal, setShowCustomProblemModal] = useState<boolean>(false);
+  const [showProblemRegionSelector, setShowProblemRegionSelector] = useState<boolean>(false);
+  const [showDashboard, setShowDashboard] = useState(false);
+  const [showDebug, setShowDebug] = useState(false);
+  const [customProblemTitle, setCustomProblemTitle] = useState<string>("");
+  const [customProblemText, setCustomProblemText] = useState<string>("");
+  const [placeCustomTextOnCanvas, setPlaceCustomTextOnCanvas] = useState<boolean>(true);
 
   const activeSection = sections.find(s => s.id === activeSectionId) || sections[0];
   const activePage = activeSection.pages.find(p => p.id === activePageId) || activeSection.pages[0];
 
-  const pageTransformsRef = useRef<Record<string, { pan: { x: number; y: number }; zoom: number }>>({});
-  const [displayZoom, setDisplayZoom] = useState<number>(1);
+  const [pageTransforms, setPageTransforms] = useState<Record<string, { pan: { x: number; y: number }; zoom: number }>>({});
 
   const [tool, setTool] = useState<"pen" | "eraser" | "select" | "text" | "lasso">("pen");
   const [eraserMode, setEraserMode] = useState<"stroke" | "pixel">("stroke");
@@ -306,21 +483,132 @@ export default function Home() {
   const [showReplay, setShowReplay] = useState(false);
 
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
+  const [saveStatus, setSaveStatus] = useState<"loading" | "saving" | "saved" | "error">("loading");
+  const [activeAssistance, setActiveAssistance] = useState<AdaptiveIntervention | null>(null);
+  const [revealedHint, setRevealedHint] = useState<string | null>(null);
+  const [dashboard, setDashboard] = useState<LearnerDashboardData | null>(null);
+  const [dashboardLoading, setDashboardLoading] = useState(false);
+  const [pointerDiagnostics, setPointerDiagnostics] = useState<PointerDiagnostics>({
+    pointerType: "unknown", pressure: 0, tiltX: 0, tiltY: 0,
+    width: 0, height: 0, coalescedSamples: 0, palmTouchesIgnored: 0, updatedAt: 0,
+  });
   
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const persistenceReadyRef = useRef(false);
+  const learnerIdRef = useRef("anonymous");
+  const sessionIdRef = useRef("session_pending");
+  const lastAssistedStrokeRef = useRef<number | null>(null);
+  const lastAssistCheckAtRef = useRef(0);
+
+  const refreshDashboard = useCallback(async (showLoading = false) => {
+    if (showLoading) setDashboardLoading(true);
+    try {
+      setDashboard(await requestLearnerDashboard(learnerIdRef.current));
+    } catch (error) {
+      console.warn("Growth dashboard could not be loaded.", error);
+    } finally {
+      if (showLoading) setDashboardLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    const learnerId = getOrCreateLearnerId();
+    learnerIdRef.current = learnerId;
+    sessionIdRef.current = createId("session");
+    recordStudyEvent({
+      learnerId: learnerIdRef.current,
+      sessionId: sessionIdRef.current,
+      eventType: "session_started",
+    });
+    void requestLearnerDashboard(learnerId)
+      .then(setDashboard)
+      .catch(error => console.warn("Initial growth dashboard could not be loaded.", error));
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void loadWorkspace<SectionData[]>()
+      .then((stored) => {
+        if (cancelled || !stored || stored.schemaVersion !== 1 || !Array.isArray(stored.sections) || stored.sections.length === 0) return;
+
+        const validSections = stored.sections.filter(section =>
+          section && typeof section.id === "string" && Array.isArray(section.pages) && section.pages.length > 0
+        );
+        if (validSections.length === 0) return;
+
+        const requestedSection = validSections.find(section => section.id === stored.activeSectionId) ?? validSections[0];
+        const requestedPage = requestedSection.pages.find(page => page.id === stored.activePageId) ?? requestedSection.pages[0];
+        setSections(validSections);
+        setActiveSectionId(requestedSection.id);
+        setActivePageId(requestedPage.id);
+        setSelectedPreset(stored.selectedPreset || "custom");
+        setPraiseMode(["super_praise", "support", "challenge"].includes(stored.praiseMode) ? stored.praiseMode : "super_praise");
+        setPageTransforms(stored.pageTransforms ?? {});
+      })
+      .catch((error) => {
+        console.warn("Saved notebook could not be restored.", error);
+        if (!cancelled) setSaveStatus("error");
+      })
+      .finally(() => {
+        if (!cancelled) {
+          persistenceReadyRef.current = true;
+          setSaveStatus(current => current === "error" ? "error" : "saved");
+        }
+      });
+
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (!persistenceReadyRef.current) return;
+
+    setSaveStatus("saving");
+    const timer = window.setTimeout(() => {
+      void saveWorkspace<SectionData[]>({
+        schemaVersion: 1,
+        savedAt: new Date().toISOString(),
+        sections,
+        activeSectionId,
+        activePageId,
+        selectedPreset,
+        praiseMode,
+        pageTransforms,
+      })
+        .then(() => setSaveStatus("saved"))
+        .catch((error) => {
+          console.warn("Notebook autosave failed.", error);
+          setSaveStatus("error");
+        });
+    }, 500);
+
+    return () => window.clearTimeout(timer);
+  }, [sections, activeSectionId, activePageId, selectedPreset, praiseMode, pageTransforms]);
+
 
   const handleSectionSwitch = useCallback((newSectionId: string) => {
+    setActiveAssistance(null);
+    setRevealedHint(null);
+    lastAssistedStrokeRef.current = null;
     setActiveSectionId(newSectionId);
     const targetSection = sections.find(s => s.id === newSectionId);
     if (targetSection && targetSection.pages.length > 0) {
       setActivePageId(targetSection.pages[0].id);
-      setDisplayZoom(pageTransformsRef.current[targetSection.pages[0].id]?.zoom || 1);
     }
   }, [sections]);
 
   const handlePageSwitch = useCallback((newPageId: string) => {
+    setActiveAssistance(null);
+    setRevealedHint(null);
+    lastAssistedStrokeRef.current = null;
+    recordStudyEvent({
+      learnerId: learnerIdRef.current,
+      sessionId: sessionIdRef.current,
+      problemId: newPageId,
+      eventType: "next_problem_started",
+    });
     setActivePageId(newPageId);
-    setDisplayZoom(pageTransformsRef.current[newPageId]?.zoom || 1);
   }, []);
 
   const updateActivePage = useCallback((updater: (page: PageData) => PageData) => {
@@ -341,75 +629,218 @@ export default function Home() {
     updateActivePage(p => ({ ...p, texts: typeof update === "function" ? update(p.texts) : update }));
   }, [updateActivePage]);
 
+  useEffect(() => {
+    let cancelled = false;
+    const evaluatePause = async () => {
+      const draws = activePage.strokes.filter(stroke => stroke.type === "draw");
+      if (draws.length === 0 || isAnalyzing || isReplaying) return;
+      const lastStrokeEnd = Math.max(...draws.map(stroke => stroke.endTime));
+      const idleSeconds = Math.max(0, (Date.now() - lastStrokeEnd) / 1000);
+
+      if (activeAssistance && lastAssistedStrokeRef.current !== null && lastStrokeEnd > lastAssistedStrokeRef.current) {
+        recordStudyEvent({
+          learnerId: learnerIdRef.current,
+          sessionId: sessionIdRef.current,
+          problemId: selectedPreset,
+          eventType: "writing_resumed",
+          data: { after_intervention: activeAssistance.action },
+        });
+        setActiveAssistance(null);
+        setRevealedHint(null);
+        lastAssistedStrokeRef.current = null;
+        return;
+      }
+      if (idleSeconds < 15 || lastAssistedStrokeRef.current === lastStrokeEnd) return;
+      if (Date.now() - lastAssistCheckAtRef.current < 10_000) return;
+      lastAssistCheckAtRef.current = Date.now();
+
+      try {
+        const response = await requestPauseAssist({
+          learnerId: learnerIdRef.current,
+          sessionId: sessionIdRef.current,
+          problemId: selectedPreset,
+          questionText: activePage.questionText,
+          strokes: activePage.strokes,
+          idleSeconds,
+          pageVisible: document.visibilityState === "visible",
+          hintCount: activePage.hintCount ?? 0,
+        });
+        if (cancelled || response.intervention.action === "wait") return;
+        lastAssistedStrokeRef.current = lastStrokeEnd;
+        setActiveAssistance(response.intervention);
+        updateActivePage(page => ({ ...page, learnerState: response.learner_state }));
+        recordStudyEvent({
+          learnerId: learnerIdRef.current,
+          sessionId: sessionIdRef.current,
+          problemId: selectedPreset,
+          eventType: "intervention_offered",
+          data: {
+            action: response.intervention.action,
+            idle_seconds: Math.round(idleSeconds),
+            policy_version: response.intervention.policy_version,
+            state: response.learner_state,
+            hint_count: activePage.hintCount ?? 0,
+            unresolved_pause_ratio: (response.process_metrics.unresolved_pause_count ?? 0) / Math.max(1, response.process_metrics.pause_count),
+            repeated_region_signal: Math.min(1, (response.process_metrics.repeated_region_count ?? 0) / 5),
+            difficulty_gap: Math.max(0, 0.5 - response.learner_state.mastery),
+          },
+          interventionProbability: 1,
+        });
+      } catch (error) {
+        console.warn("Pause assistance could not be evaluated.", error);
+      }
+    };
+    const timer = window.setInterval(() => void evaluatePause(), 3_000);
+    void evaluatePause();
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [activePage, activeAssistance, isAnalyzing, isReplaying, selectedPreset, updateActivePage]);
+
+  const dismissAssistance = useCallback(() => {
+    if (activeAssistance) {
+      recordStudyEvent({
+        learnerId: learnerIdRef.current,
+        sessionId: sessionIdRef.current,
+        problemId: selectedPreset,
+        eventType: "intervention_dismissed",
+        data: { action: activeAssistance.action },
+      });
+    }
+    setActiveAssistance(null);
+    setRevealedHint(null);
+  }, [activeAssistance, selectedPreset]);
+
+  const revealNextHint = useCallback(() => {
+    if (!activeAssistance) return;
+    const currentCount = activePage.hintCount ?? 0;
+    const hint = activeAssistance.hint_levels[Math.min(currentCount, activeAssistance.hint_levels.length - 1)];
+    if (!hint) return;
+    setRevealedHint(hint);
+    updateActivePage(page => ({ ...page, hintCount: (page.hintCount ?? 0) + 1 }));
+    recordStudyEvent({
+      learnerId: learnerIdRef.current,
+      sessionId: sessionIdRef.current,
+      problemId: selectedPreset,
+      eventType: "hint_opened",
+      data: { level: currentCount + 1, action: activeAssistance.action },
+    });
+  }, [activeAssistance, activePage.hintCount, selectedPreset, updateActivePage]);
+
   const handleResetTransform = useCallback(() => {
-    pageTransformsRef.current[activePageId] = { pan: { x: 0, y: 0 }, zoom: 1 };
-    setDisplayZoom(1); setActivePageId(prev => prev); setSections(prev => [...prev]);
+    setPageTransforms(previous => ({ ...previous, [activePageId]: { pan: { x: 0, y: 0 }, zoom: 1 } }));
+    setActivePageId(prev => prev); setSections(prev => [...prev]);
   }, [activePageId]);
 
   const handleClear = useCallback(() => {
     if (window.confirm("このページの内容をすべて消去しますか？")) {
-      updateActivePage(p => ({ ...p, strokes: [], images: [], texts: [], aiAnnotations: [] }));
+      updateActivePage(p => ({
+        ...p,
+        strokes: [], images: [], texts: [], aiAnnotations: [],
+        thoughtTypeBadge: undefined, praisePoints: undefined, encouragementMessage: undefined,
+        recognizedContent: undefined, aiSummary: undefined, analysisSource: undefined,
+        analysisNotice: undefined, processMetrics: undefined, rawAiResponse: undefined,
+      }));
       setReplayedStrokes([]); setIsReplaying(false);
+      setActiveAssistance(null); setRevealedHint(null); lastAssistedStrokeRef.current = null;
     }
   }, [updateActivePage]);
 
   const handleUndo = useCallback(() => {
-    setStrokesForActivePage(prev => {
-      let latestTime = 0;
-      let actionType: "draw" | "erase" = "draw";
-      let latestStrokeId = "";
-
-      // 一番最後に行われたアクション（描いた、または消した）を探す
-      prev.forEach(s => {
-        if (!s.isErased && s.endTime > latestTime) {
-          latestTime = s.endTime;
-          actionType = "draw";
-          latestStrokeId = s.strokeId;
-        }
-        if (s.isErased && s.erasedAt && s.erasedAt > latestTime) {
-          latestTime = s.erasedAt;
-          actionType = "erase";
-        }
-      });
-
-      if (latestTime === 0) return prev; // 戻すものがない場合
-
-      if (actionType === "draw") {
-        // 「描いた」のを戻す場合 → 消しゴムで消した扱いにすることでAIのログに残す
-        return prev.map(s => s.strokeId === latestStrokeId ? { ...s, isErased: true, erasedAt: Date.now() } : s);
-      } else {
-        // 「消しゴムで消した」のを戻す場合 → 消去フラグを解除して復活させる
-        return prev.map(s => s.erasedAt === latestTime ? { ...s, isErased: false, erasedAt: undefined } : s);
-      }
-    });
+    setStrokesForActivePage(previous => undoLastStrokeAction(previous));
   }, [setStrokesForActivePage]);
 
-  const handleSetBlank = useCallback(() => {
-    updateActivePage(p => ({ ...p, images: [], bgFileName: null }));
-    handleResetTransform();
-  }, [updateActivePage, handleResetTransform]);
-
   const handleFileUpload = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files) return;
-    Array.from(files).forEach((file, index) => {
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        const base64 = event.target?.result as string;
-        const img = new Image();
-        img.src = base64;
-        img.onload = () => {
-          const newImage: CanvasImage = {
-            id: `img_${Date.now()}_${index}`, url: base64,
-            x: 50 + index * 20, y: 50 + index * 20, width: img.width, height: img.height, name: file.name
-          };
-          updateActivePage(p => ({ ...p, images: [...p.images, newImage] }));
-        };
-      };
-      reader.readAsDataURL(file);
-    });
+    const files = Array.from(e.target.files ?? []);
     if (fileInputRef.current) fileInputRef.current.value = "";
-  }, [updateActivePage]);
+    if (files.length === 0) return;
+
+    void (async () => {
+      setAnalysisError(null);
+      for (const [index, file] of files.entries()) {
+        if (file.size > 20 * 1024 * 1024) {
+          setAnalysisError(`${file.name} は20MBを超えているため読み込めません。`);
+          continue;
+        }
+        if (file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf")) {
+          try {
+            const renderedPages = await renderPdfPages(file);
+            const addedPages: PageData[] = renderedPages.map((rendered) => {
+              const displayScale = Math.min(1, 1050 / rendered.width);
+              return {
+                id: createId("page_pdf"),
+                title: rendered.name,
+                date: new Date().toLocaleString(),
+                strokes: [],
+                images: [{
+                  id: createId("img_pdf"),
+                  url: rendered.dataUrl,
+                  x: 40,
+                  y: 40,
+                  width: Math.round(rendered.width * displayScale),
+                  height: Math.round(rendered.height * displayScale),
+                  name: rendered.name,
+                }],
+                texts: [],
+                bgFileName: file.name,
+                aiAnnotations: [],
+                sourceType: "pdf",
+                hintCount: 0,
+              };
+            });
+            if (addedPages.length > 0) {
+              setSections(previous => previous.map(section => section.id !== activeSectionId ? section : {
+                ...section,
+                pages: [...section.pages, ...addedPages],
+              }));
+              setActivePageId(addedPages[0].id);
+              setSelectedPreset("photo_problem");
+            }
+          } catch (error) {
+            setAnalysisError(error instanceof Error ? error.message : "PDFを読み込めませんでした。");
+          }
+          continue;
+        }
+        if (!file.type.startsWith("image/")) {
+          setAnalysisError(`${file.name} は対応していないファイル形式です。`);
+          continue;
+        }
+        const base64 = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result));
+          reader.onerror = () => reject(reader.error ?? new Error("画像を読み込めませんでした。"));
+          reader.readAsDataURL(file);
+        });
+        const dimensions = await new Promise<{ width: number; height: number }>((resolve, reject) => {
+          const image = new Image();
+          image.onload = () => resolve({ width: image.width, height: image.height });
+          image.onerror = () => reject(new Error("画像を表示できませんでした。"));
+          image.src = base64;
+        });
+        const displayScale = Math.min(1, 1050 / dimensions.width);
+        const newImage: CanvasImage = {
+          id: createId("img"),
+          url: base64,
+          x: 50 + index * 20,
+          y: 50 + index * 20,
+          width: Math.round(dimensions.width * displayScale),
+          height: Math.round(dimensions.height * displayScale),
+          name: file.name,
+        };
+        updateActivePage(page => ({
+          ...page,
+          title: page.title || file.name,
+          images: [...page.images, newImage],
+          bgFileName: file.name,
+          sourceType: "photo",
+        }));
+        setSelectedPreset("photo_problem");
+      }
+    })().catch((error) => {
+      setAnalysisError(error instanceof Error ? error.message : "ファイルを読み込めませんでした。");
+    });
+  }, [activeSectionId, updateActivePage]);
 
   const exportCanvasWithWhiteBackground = (mimeType: string, quality: number = 1.0) => {
     const canvas = document.getElementById("homeruai-canvas") as HTMLCanvasElement;
@@ -463,6 +894,125 @@ export default function Home() {
     pdf.save(`${activePage.title || "export"}.pdf`);
   }, [activePage.title]);
 
+  const handleSelectPreset = useCallback((presetId: string) => {
+    if (presetId === "input_custom") {
+      setSelectedPreset(presetId);
+      setCustomProblemTitle(activePage.title || "任意の問題");
+      setCustomProblemText(activePage.questionText || "");
+      setShowCustomProblemModal(true);
+      return;
+    }
+
+    if (presetId === "photo_problem") {
+      setSelectedPreset(presetId);
+      fileInputRef.current?.click();
+      return;
+    }
+
+    const target = PRESET_QUESTIONS.find(q => q.id === presetId);
+    if (!target) return;
+    if (presetId !== selectedPreset && activePage.strokes.some(stroke => !stroke.isErased) && !window.confirm("問題を切り替えると、このページの筆記内容が消えます。切り替えますか？")) return;
+
+    setSelectedPreset(presetId);
+
+    updateActivePage(p => {
+      const filteredTexts = p.texts.filter(t => !t.id.startsWith("txt_preset_"));
+      const newTexts: CanvasText[] = target.text ? [
+        ...filteredTexts,
+        {
+          id: `txt_preset_${Date.now()}`,
+          text: target.text,
+          x: 60,
+          y: 40,
+          fontSize: 22,
+          color: "#1e293b",
+          fontWeight: "bold",
+          fontStyle: "normal",
+          textDecoration: "none"
+        }
+      ] : filteredTexts;
+
+      return {
+        ...p,
+        title: target.title,
+        questionText: target.text || undefined,
+        texts: newTexts,
+        strokes: [],
+        aiAnnotations: [],
+        thoughtTypeBadge: undefined,
+        praisePoints: undefined,
+        encouragementMessage: undefined,
+        recognizedContent: undefined,
+        aiSummary: undefined,
+        analysisSource: undefined,
+        analysisNotice: undefined,
+        processMetrics: undefined,
+        learnerState: undefined,
+        intervention: undefined,
+        recognitionConfidence: undefined,
+        recognitionUncertainties: undefined,
+        skillTags: undefined,
+        sourceType: presetId === "custom" ? "blank" : "preset",
+        hintCount: 0,
+        rawAiResponse: undefined
+      };
+    });
+    setReplayedStrokes([]);
+    setIsReplaying(false);
+  }, [activePage.title, activePage.questionText, activePage.strokes, selectedPreset, updateActivePage]);
+
+  const handleApplyCustomProblem = useCallback(() => {
+    const finalTitle = customProblemTitle.trim() || "任意の問題";
+    const finalQuestion = customProblemText.trim();
+
+    updateActivePage(p => {
+      const filteredTexts = p.texts.filter(t => !t.id.startsWith("txt_preset_"));
+      const newTexts: CanvasText[] = (placeCustomTextOnCanvas && finalQuestion) ? [
+        ...filteredTexts,
+        {
+          id: `txt_preset_${Date.now()}`,
+          text: `【問題】\n${finalQuestion}`,
+          x: 60,
+          y: 40,
+          fontSize: 20,
+          color: "#1e293b",
+          fontWeight: "bold",
+          fontStyle: "normal",
+          textDecoration: "none"
+        }
+      ] : filteredTexts;
+
+      return {
+        ...p,
+        title: finalTitle,
+        questionText: finalQuestion,
+        texts: newTexts,
+        strokes: [],
+        aiAnnotations: [],
+        thoughtTypeBadge: undefined,
+        praisePoints: undefined,
+        encouragementMessage: undefined,
+        recognizedContent: undefined,
+        aiSummary: undefined,
+        analysisSource: undefined,
+        analysisNotice: undefined,
+        processMetrics: undefined,
+        learnerState: undefined,
+        intervention: undefined,
+        recognitionConfidence: undefined,
+        recognitionUncertainties: undefined,
+        skillTags: undefined,
+        sourceType: "typed",
+        hintCount: 0,
+        rawAiResponse: undefined
+      };
+    });
+    setSelectedPreset("input_custom");
+    setShowCustomProblemModal(false);
+    setReplayedStrokes([]);
+    setIsReplaying(false);
+  }, [customProblemTitle, customProblemText, placeCustomTextOnCanvas, updateActivePage]);
+
   const handleAnalyze = useCallback(async () => {
     if (activePage.strokes.length === 0) {
       alert("分析する手書きプロセスがありません。キャンバスに記述してください。");
@@ -470,127 +1020,217 @@ export default function Home() {
     }
     
     setIsAnalyzing(true);
+    setAnalysisError(null);
     updateActivePage(p => ({ ...p, aiAnnotations: [] }));
     
     try {
-      // 基準となる画像（最初の画像）を取得
       const refImage = activePage.images.length > 0 ? activePage.images[0] : null;
-      
-      // 画像基準のGhost Renderを生成
-      const ghostResult = await generateGhostRender(activePage.strokes, refImage);
+      const selectedBounds = refImage && activePage.problemRegion ? {
+        x: refImage.x + refImage.width * activePage.problemRegion.x,
+        y: refImage.y + refImage.height * activePage.problemRegion.y,
+        width: refImage.width * activePage.problemRegion.width,
+        height: refImage.height * activePage.problemRegion.height,
+      } : undefined;
+      const directlyInside = (stroke: Stroke) => !selectedBounds || stroke.points.some(point =>
+        point.x >= selectedBounds.x && point.x <= selectedBounds.x + selectedBounds.width
+        && point.y >= selectedBounds.y && point.y <= selectedBounds.y + selectedBounds.height
+      );
+      const selectedDrawIds = new Set(activePage.strokes.filter(stroke => stroke.type === "draw" && directlyInside(stroke)).map(stroke => stroke.strokeId));
+      const strokesForAnalysis = activePage.strokes.filter(stroke =>
+        directlyInside(stroke) || stroke.targetStrokeIds?.some(id => selectedDrawIds.has(id))
+      );
+      if (strokesForAnalysis.length === 0) {
+        throw new Error("選択した問題範囲に手書きがありません。範囲を選び直してください。");
+      }
+      const ghostResult = await generateGhostRender(strokesForAnalysis, refImage);
+      if (!ghostResult.image) throw new Error("分析用の画像を作成できませんでした。もう一度ペンで書いてからお試しください。");
+      const sourceImage = refImage ? await prepareSourceImage(refImage.url, activePage.problemRegion) : undefined;
+      const processImage = refImage && activePage.problemRegion
+        ? await prepareSourceImage(ghostResult.image, activePage.problemRegion)
+        : ghostResult.image;
+      const analysisBounds = selectedBounds ?? ghostResult.virtualBounds;
 
-      const response = await fetch("/api/analyze", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          questionId: activePage.title || "custom_upload",
-          strokes: activePage.strokes.map(s => {
-            let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-            for (const p of s.points) {
-              if (p.x < minX) minX = p.x;
-              if (p.x > maxX) maxX = p.x;
-              if (p.y < minY) minY = p.y;
-              if (p.y > maxY) maxY = p.y;
-            }
-            if (minX === Infinity) {
-              minX = 0; maxX = 0; minY = 0; maxY = 0;
-            }
-            return {
-              strokeId: s.strokeId,
-              type: s.type,
-              startTime: s.startTime,
-              endTime: s.endTime,
-              points: [], // ペイロードサイズ削減のため空配列を送信
-              boundingBox: [minX, maxX, minY, maxY],
-              pointCount: s.points.length,
-              color: s.color,
-              width: s.width,
-              isErased: s.isErased || false,
-              erasedAt: s.erasedAt,
-              targetStrokeIds: s.targetStrokeIds
-            };
-          }),
-          image: ghostResult.image,
-          backgroundImage: refImage?.url || null,
-          imageWidth: refImage?.width,
-          imageHeight: refImage?.height,
-          imageX: refImage?.x || 0, // これを追加！ @0621
-          imageY: refImage?.y || 0, // これを追加！
-          model: selectedModel
-        })
-      });
+      const targetQuestionId = selectedPreset !== "custom" ? selectedPreset : (activePage.title || "custom");
+
+      const payload = {
+        questionId: targetQuestionId,
+        questionText: activePage.questionText || undefined,
+        praiseMode: praiseMode,
+        learnerId: learnerIdRef.current,
+        sessionId: sessionIdRef.current,
+        sourceType: activePage.sourceType ?? (refImage ? "photo" : activePage.questionText ? "typed" : "blank"),
+        sourceImage,
+        analysisBounds: analysisBounds ? {
+          min_x: analysisBounds.x,
+          min_y: analysisBounds.y,
+          width: analysisBounds.width,
+          height: analysisBounds.height,
+        } : undefined,
+        hintCount: activePage.hintCount ?? 0,
+        strokes: strokesForAnalysis.map(s => {
+          let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+          for (const p of s.points) {
+            if (p.x < minX) minX = p.x;
+            if (p.x > maxX) maxX = p.x;
+            if (p.y < minY) minY = p.y;
+            if (p.y > maxY) maxY = p.y;
+          }
+          if (minX === Infinity) {
+            minX = 0; maxX = 0; minY = 0; maxY = 0;
+          }
+          return {
+            strokeId: s.strokeId,
+            type: s.type,
+            startTime: s.startTime,
+            endTime: s.endTime,
+            points: [],
+            boundingBox: [minX, maxX, minY, maxY],
+            pointCount: s.points.length,
+            color: s.color,
+            width: s.width,
+            isErased: s.isErased || false,
+            erasedAt: s.erasedAt,
+            targetStrokeIds: s.targetStrokeIds
+          };
+        }),
+        image: processImage,
+        imageWidth: refImage?.width,
+        imageHeight: refImage?.height,
+        imageX: refImage?.x || 0,
+        imageY: refImage?.y || 0,
+        model: "gemini" as const,
+      };
+
+      // Next.jsプロキシのソケット切断(ECONNRESET)を回避するため直接FastAPI(ポート8000)に接続
+      const getApiUrl = () => {
+        if (process.env.NEXT_PUBLIC_API_URL) {
+          return `${process.env.NEXT_PUBLIC_API_URL}/api/analyze`;
+        }
+        if (typeof window !== "undefined") {
+          return `${window.location.protocol}//${window.location.hostname}:8000/api/analyze`;
+        }
+        return "/api/analyze";
+      };
+
+      const postAnalysis = async (url: string) => {
+        const controller = new AbortController();
+        const timeout = window.setTimeout(() => controller.abort(), 60_000);
+        try {
+          return await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+            signal: controller.signal,
+          });
+        } finally {
+          window.clearTimeout(timeout);
+        }
+      };
+
+      let response: Response;
+      try {
+        response = await postAnalysis(getApiUrl());
+      } catch (directErr) {
+        console.warn("Direct FastAPI connection failed, attempting /api/analyze fallback:", directErr);
+        response = await postAnalysis("/api/analyze");
+      }
 
       if (!response.ok) {
-        throw new Error(`API error: ${response.status}`);
+        let detail = "";
+        try {
+          const errorBody = await response.json() as { detail?: string };
+          detail = typeof errorBody.detail === "string" ? ` ${errorBody.detail}` : "";
+        } catch { /* JSONではないエラー応答 */ }
+        throw new Error(`分析APIが応答できませんでした (${response.status})。${detail}`);
       }
 
-      const result = await response.json();
+      const result = await response.json() as AnalysisResponseData;
 
-      let targetImage = refImage;
-      let addedVirtualImage = false;
-      let virtualImage: CanvasImage | null = null;
-      if (!targetImage && (ghostResult as any).virtualBounds) {
-        const bounds = (ghostResult as any).virtualBounds;
-        console.log("[AI Debug] virtualBounds from ghostRender:", bounds);
-        virtualImage = {
-          id: "virtual_bg",
-          url: "",
-          x: bounds.x,
-          y: bounds.y,
-          width: bounds.width,
-          height: bounds.height,
-          name: "virtual_bg"
-        };
-        targetImage = virtualImage;
-        addedVirtualImage = true;
-      }
-      console.log("[AI Debug] raw annotations from Gemini:", JSON.stringify(result.annotations));
-      console.log("[AI Debug] targetImage:", targetImage ? {id: targetImage.id, x: targetImage.x, y: targetImage.y, w: targetImage.width, h: targetImage.height} : null);
+      const targetImage = refImage;
+      const bounds = ghostResult.virtualBounds;
+      const imgId = targetImage ? targetImage.id : "canvas_base";
 
-      if (result.annotations && Array.isArray(result.annotations) && targetImage) {
-         const annotations: AIAnnotation[] = result.annotations.map((mark: any, i: number) => {
-           const [ymin, xmin, ymax, xmax] = mark.box_2d;
-           const wx1 = targetImage.x + (xmin / 1000) * targetImage.width;
-           const wy1 = targetImage.y + (ymin / 1000) * targetImage.height;
-           const wx2 = targetImage.x + (xmax / 1000) * targetImage.width;
-           const wy2 = targetImage.y + (ymax / 1000) * targetImage.height;
-           console.log(`[AI Debug] ann[${i}] type=${mark.type} box=[${mark.box_2d}] -> world: x1=${wx1.toFixed(0)}, y1=${wy1.toFixed(0)}, x2=${wx2.toFixed(0)}, y2=${wy2.toFixed(0)}`);
-           return {
-             id: `ai_ann_${Date.now()}_${i}`,
-             imageId: targetImage.id,
-             type: mark.type === "circle" ? "circle" : mark.type === "underline" ? "underline" : mark.type === "text" ? "text" : "underline",
-             box_2d: mark.box_2d as [number, number, number, number],
-             comment: mark.comment || undefined,
-             color: "#e81123",
-           };
-         });
-         updateActivePage(p => {
-           const filteredImages = p.images.filter(img => img.id !== "virtual_bg");
-           const nextImages = addedVirtualImage && virtualImage ? [...filteredImages, virtualImage] : filteredImages;
-           return { 
-             ...p, 
-             images: nextImages, 
-             aiAnnotations: annotations,
-             aiSummary: result.summary,
-             rawAiResponse: result
-           };
-         });
-      }
+      const allowedAnnotationTypes = new Set(["circle", "underline", "text", "stamp"] as const);
+      const annotations: AIAnnotation[] = (Array.isArray(result.annotations) ? result.annotations : []).flatMap((mark, i) => {
+        if (!Array.isArray(mark.box_2d) || mark.box_2d.length !== 4 || !allowedAnnotationTypes.has(mark.type)) return [];
+        let box = mark.box_2d.map(value => Math.max(0, Math.min(1000, Math.round(Number(value))))) as [number, number, number, number];
+        if (box.some(value => !Number.isFinite(value))) return [];
+        if (targetImage && activePage.problemRegion) {
+          const region = activePage.problemRegion;
+          box = [
+            Math.round((region.y + box[0] / 1000 * region.height) * 1000),
+            Math.round((region.x + box[1] / 1000 * region.width) * 1000),
+            Math.round((region.y + box[2] / 1000 * region.height) * 1000),
+            Math.round((region.x + box[3] / 1000 * region.width) * 1000),
+          ];
+        }
+        return [{
+          id: `ai_ann_${Date.now()}_${i}`,
+          imageId: imgId,
+          type: mark.type,
+          box_2d: box,
+          comment: mark.comment || undefined,
+          color: mark.type === "circle" ? "#107c41" : "#e81123",
+          virtualBounds: targetImage ? undefined : bounds,
+          evidenceId: mark.evidence_id,
+        }];
+      });
+
+      updateActivePage(p => ({
+        ...p,
+        aiAnnotations: annotations,
+        thoughtTypeBadge: result.thought_type_badge || "粘り強いチャレンジャー型",
+        praisePoints: result.praise_points || [],
+        encouragementMessage: result.encouragement_message || "",
+        recognizedContent: result.recognized_content,
+        aiSummary: result.summary,
+        analysisSource: result.source,
+        analysisNotice: result.notice,
+        providerErrorCategory: result.provider_error_category,
+        processMetrics: result.process_metrics,
+        learnerState: result.learner_state,
+        intervention: result.intervention,
+        recognitionConfidence: result.recognition_confidence,
+        recognitionUncertainties: result.recognition_uncertainties,
+        skillTags: result.skill_tags,
+        feedbackRating: undefined,
+        rawAiResponse: result
+      }));
+
+      recordStudyEvent({
+        learnerId: learnerIdRef.current,
+        sessionId: sessionIdRef.current,
+        problemId: targetQuestionId,
+        eventType: "analysis_completed",
+        data: {
+          analysis_id: result.analysis_id,
+          source: result.source,
+          recognition_confidence: result.recognition_confidence,
+          intervention_action: result.intervention?.action,
+        },
+      });
+
+      void refreshDashboard();
+
+      setShowPraiseModal(true);
     } catch (error) {
       console.warn("FastAPI connection failed.", error);
+      const message = error instanceof DOMException && error.name === "AbortError"
+        ? "分析が60秒以内に完了しませんでした。通信状況を確認して、もう一度お試しください。"
+        : error instanceof Error ? error.message : "AI分析に失敗しました。";
+      setAnalysisError(message);
     } finally {
       setIsAnalyzing(false);
     }
-  }, [activePage, updateActivePage]);
+  }, [activePage, selectedPreset, praiseMode, refreshDashboard, updateActivePage]);
+
 
   const handleAddSection = useCallback(() => {
     const title = prompt("新しいセクションの名前を入力:", "新規セクション");
     if (!title) return;
     const newId = `sec_${Date.now()}`; const newPageId = `page_${Date.now()}`;
     setSections(prev => [...prev, {
-      id: newId, title, pages: [{ id: newPageId, title: "", date: new Date().toLocaleString(), strokes: [], images: [], texts: [], bgFileName: null, aiAnnotations: [] }]
+      id: newId, title, pages: [{ id: newPageId, title: "", date: new Date().toLocaleString(), strokes: [], images: [], texts: [], bgFileName: null, aiAnnotations: [], sourceType: "blank", hintCount: 0 }]
     }]);
     setActiveSectionId(newId); setActivePageId(newPageId);
   }, []);
@@ -598,10 +1238,21 @@ export default function Home() {
   const handleAddPage = useCallback(() => {
     const newPageId = `page_${Date.now()}`;
     setSections(prev => prev.map(s => s.id !== activeSectionId ? s : {
-      ...s, pages: [...s.pages, { id: newPageId, title: "", date: new Date().toLocaleString(), strokes: [], images: [], texts: [], bgFileName: null, aiAnnotations: [] }]
+      ...s, pages: [...s.pages, { id: newPageId, title: "", date: new Date().toLocaleString(), strokes: [], images: [], texts: [], bgFileName: null, aiAnnotations: [], sourceType: "blank", hintCount: 0 }]
     }));
     setActivePageId(newPageId);
   }, [activeSectionId]);
+
+  const rateFeedback = useCallback((rating: "helpful" | "not_for_me") => {
+    updateActivePage(page => ({ ...page, feedbackRating: rating }));
+    recordStudyEvent({
+      learnerId: learnerIdRef.current,
+      sessionId: sessionIdRef.current,
+      problemId: selectedPreset,
+      eventType: "feedback_rating",
+      data: { rating, analysis_source: activePage.analysisSource },
+    });
+  }, [activePage.analysisSource, selectedPreset, updateActivePage]);
 
   return (
     <main className="onenote-app">
@@ -610,14 +1261,38 @@ export default function Home() {
         eraserMode={eraserMode} setEraserMode={setEraserMode}
         brushColor={brushColor} setBrushColor={setBrushColor} brushWidth={brushWidth} setBrushWidth={setBrushWidth}
         eraserWidth={eraserWidth} setEraserWidth={setEraserWidth}
-        textStyle={textStyle} setTextStyle={setTextStyle} zoom={displayZoom}
+        textStyle={textStyle} setTextStyle={setTextStyle}
         handleResetTransform={handleResetTransform} handleClear={handleClear}
         showReplay={showReplay} setShowReplay={setShowReplay} isReplaying={isReplaying} setIsReplaying={setIsReplaying}
         setReplayedStrokes={setReplayedStrokes} activePageStrokes={activePage.strokes}
-        handleSetBlank={handleSetBlank} fileInputRef={fileInputRef} handleFileUpload={handleFileUpload}
+        fileInputRef={fileInputRef} handleFileUpload={handleFileUpload}
+        onSelectProblemRegion={() => setShowProblemRegionSelector(true)}
+        canSelectProblemRegion={activePage.images.length > 0}
+        hasProblemRegion={Boolean(activePage.problemRegion)}
         handleExportPNG={handleExportPNG} handleExportPDF={handleExportPDF} handleAnalyze={handleAnalyze} isAnalyzing={isAnalyzing}
-        selectedModel={selectedModel} setSelectedModel={setSelectedModel}
+        selectedPreset={selectedPreset} onSelectPreset={handleSelectPreset}
+        onOpenCustomProblemModal={() => {
+          setCustomProblemTitle(activePage.title || "任意の問題");
+          setCustomProblemText(activePage.questionText || "");
+          setShowCustomProblemModal(true);
+        }}
+        praiseMode={praiseMode} setPraiseMode={setPraiseMode}
+        handleUndo={handleUndo} saveStatus={saveStatus}
       />
+      <section className="motivation-bar" aria-label="今日の学習状況">
+        <div className="motivation-message">
+          <span>今日もノートを開けたね</span>
+          <strong>{activePage.strokes.length > 0 ? `${activePage.strokes.filter(stroke => stroke.type === "draw").length}本の一歩を記録中` : "まず一画から始めよう"}</strong>
+        </div>
+        <div className="compact-level">
+          <div className="compact-level-label"><Flame size={16} />Lv.{dashboard?.level ?? 1}</div>
+          <div className="compact-xp"><div style={{ width: `${dashboard ? Math.round(dashboard.level_xp / dashboard.xp_to_next_level * 100) : 0}%` }} /></div>
+          <span>{dashboard?.total_xp ?? 0} XP</span>
+        </div>
+        <button className="dashboard-button" onClick={() => { setShowDashboard(true); void refreshDashboard(true); }}><BarChart3 size={18} />成長を見る</button>
+        <button className={`debug-button ${showDebug ? "active" : ""}`} onClick={() => setShowDebug(value => !value)} title="研究者向けデバッグ表示"><Bug size={17} />Debug</button>
+      </section>
+      {showDashboard && <LearningDashboard data={dashboard} loading={dashboardLoading} onClose={() => setShowDashboard(false)} />}
       <div className="onenote-container">
         <Sidebar sections={sections} activeSectionId={activeSectionId} activePageId={activePageId} handleSectionSwitch={handleSectionSwitch} handlePageSwitch={handlePageSwitch} handleAddSection={handleAddSection} handleAddPage={handleAddPage} />
         <div className="canvas-main-area">
@@ -625,7 +1300,7 @@ export default function Home() {
             <input type="text" value={activePage.title} onChange={e => updateActivePage(p => ({ ...p, title: e.target.value }))} className="canvas-title-input" placeholder="無題のページ" />
             <div className="canvas-date-label">{activePage.date}</div>
           </div>
-<div className="canvas-body" style={{ display: "flex", flexDirection: "row", width: "100%", height: "calc(100vh - 120px)", overflow: "hidden" }}>
+<div className="canvas-body" style={{ display: "flex", flexDirection: "row", width: "100%", height: "100%", overflow: "hidden" }}>
   <div style={{ flex: 1, position: "relative", width: "100%", height: "100%" }}>
               <Canvas
                 key={activePageId}
@@ -634,9 +1309,78 @@ export default function Home() {
                 texts={activePage.texts} setTexts={setTextsForActivePage}
                 aiAnnotations={activePage.aiAnnotations}
                 tool={tool} eraserMode={eraserMode} brushColor={brushColor} brushWidth={brushWidth} eraserWidth={eraserWidth} textStyle={textStyle}
-                isReplaying={isReplaying} initialPan={pageTransformsRef.current[activePageId]?.pan || { x: 0, y: 0 }} initialZoom={pageTransformsRef.current[activePageId]?.zoom || 1}
-                onTransformChange={(newPan, newZoom) => { pageTransformsRef.current[activePageId] = { pan: newPan, zoom: newZoom }; setDisplayZoom(newZoom); }}
+                isReplaying={isReplaying} initialPan={pageTransforms[activePageId]?.pan || { x: 0, y: 0 }} initialZoom={pageTransforms[activePageId]?.zoom || 1}
+                onTransformChange={(newPan, newZoom) => { setPageTransforms(previous => ({ ...previous, [activePageId]: { pan: newPan, zoom: newZoom } })); }}
+                onPointerDiagnostics={showDebug ? setPointerDiagnostics : undefined}
               />
+              {showDebug && (
+                <DebugPanel
+                  learnerState={activePage.learnerState}
+                  dashboard={dashboard}
+                  metrics={activePage.processMetrics}
+                  pointer={pointerDiagnostics}
+                  analysisSource={activePage.analysisSource}
+                  providerError={activePage.providerErrorCategory}
+                  recognitionConfidence={activePage.recognitionConfidence}
+                  strokeCount={activePage.strokes.length}
+                  imageCount={activePage.images.length}
+                  problemRegion={activePage.problemRegion}
+                  onClose={() => setShowDebug(false)}
+                />
+              )}
+              {activeAssistance && (
+                <aside aria-live="polite" style={{
+                  position: "absolute", right: "20px", bottom: "24px", zIndex: 48,
+                  width: "min(360px, calc(100% - 40px))", background: "#ffffff",
+                  border: "2px solid #c4b5fd", borderRadius: "18px", padding: "16px",
+                  boxShadow: "0 16px 36px rgba(76, 29, 149, 0.2)", display: "flex",
+                  flexDirection: "column", gap: "12px",
+                }}>
+                  <div style={{ display: "flex", gap: "10px", alignItems: "flex-start" }}>
+                    <Bot size={24} color="#6d28d9" style={{ flexShrink: 0 }} />
+                    <div>
+                      <strong style={{ color: "#4c1d95", fontSize: "14px" }}>
+                        {activeAssistance.action === "offer_hint" ? "考えるお手伝い" : "今の取り組み、見えているよ"}
+                      </strong>
+                      <p style={{ margin: "5px 0 0", color: "#334155", lineHeight: 1.55, fontSize: "13px" }}>
+                        {activeAssistance.message}
+                      </p>
+                    </div>
+                  </div>
+                  {revealedHint && (
+                    <div style={{ background: "#fefce8", border: "1px solid #fde68a", borderRadius: "10px", padding: "10px", color: "#713f12", fontSize: "13px", lineHeight: 1.5 }}>
+                      <strong>小さなヒント：</strong> {revealedHint}
+                    </div>
+                  )}
+                  <div style={{ display: "flex", gap: "8px", justifyContent: "flex-end", flexWrap: "wrap" }}>
+                    <button onClick={dismissAssistance} style={{ border: "1px solid #cbd5e1", background: "#ffffff", color: "#475569", borderRadius: "9px", padding: "8px 11px", cursor: "pointer", fontSize: "12px" }}>
+                      このまま考える
+                    </button>
+                    {activeAssistance.hint_levels.length > 0 && (
+                      <button onClick={revealNextHint} style={{ border: "none", background: "#6d28d9", color: "#ffffff", borderRadius: "9px", padding: "8px 12px", cursor: "pointer", fontSize: "12px", fontWeight: 700 }}>
+                        {revealedHint ? "次のヒント" : "小さなヒントを見る"}
+                      </button>
+                    )}
+                  </div>
+                </aside>
+              )}
+              {analysisError && (
+                <div role="alert" style={{ position: "absolute", top: "16px", left: "50%", transform: "translateX(-50%)", zIndex: 55, width: "min(620px, calc(100% - 32px))", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", background: "#fff7ed", color: "#9a3412", border: "1px solid #fdba74", borderRadius: "12px", padding: "12px 14px", boxShadow: "0 8px 24px rgba(0,0,0,0.12)", fontSize: "13px" }}>
+                  <span><strong>分析を完了できませんでした。</strong> {analysisError}</span>
+                  <button aria-label="エラーを閉じる" onClick={() => setAnalysisError(null)} style={{ border: "none", background: "transparent", color: "inherit", cursor: "pointer", padding: "2px" }}><X size={18} /></button>
+                </div>
+              )}
+              {showProblemRegionSelector && activePage.images[0] && (
+                <ProblemRegionSelector
+                  imageUrl={activePage.images[0].url}
+                  initialRegion={activePage.problemRegion}
+                  onClose={() => setShowProblemRegionSelector(false)}
+                  onApply={(problemRegion) => {
+                    updateActivePage(page => ({ ...page, problemRegion }));
+                    setShowProblemRegionSelector(false);
+                  }}
+                />
+              )}
               {isAnalyzing && (
                 <div 
                   style={{
@@ -645,34 +1389,33 @@ export default function Home() {
                     left: 0,
                     width: "100%",
                     height: "100%",
-                    backgroundColor: "rgba(255, 255, 255, 0.6)",
-                    backdropFilter: "blur(6px)", // 背景をすりガラス状にぼかす
-                    WebkitBackdropFilter: "blur(6px)",
+                    backgroundColor: "rgba(255, 255, 255, 0.75)",
+                    backdropFilter: "blur(8px)",
+                    WebkitBackdropFilter: "blur(8px)",
                     display: "flex",
                     flexDirection: "column",
                     justifyContent: "center",
                     alignItems: "center",
-                    zIndex: 50, // キャンバスの上に表示
+                    zIndex: 50,
                   }}
                 >
                   <div 
                     style={{
                       backgroundColor: "#ffffff",
-                      padding: "32px 48px",
-                      borderRadius: "16px",
-                      boxShadow: "0 10px 30px rgba(92, 45, 145, 0.15)",
+                      padding: "36px 54px",
+                      borderRadius: "20px",
+                      boxShadow: "0 20px 40px rgba(92, 45, 145, 0.2)",
                       display: "flex",
                       flexDirection: "column",
                       alignItems: "center",
-                      gap: "16px",
-                      border: "1px solid #e1dfdd",
-                      animation: "pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite" // フワフワさせる
+                      gap: "18px",
+                      border: "2px solid #e1dfdd",
                     }}
                   >
                     <div style={{ position: "relative" }}>
-                      <Bot size={56} color="#5c2d91" />
+                      <Bot size={60} color="#5c2d91" />
                       <div style={{ position: "absolute", top: -8, right: -12 }}>
-                        <Sparkles size={24} color="#ffb900" className="animate-spin" style={{ animationDuration: '3s' }} />
+                        <Sparkles size={28} color="#ffb900" className="animate-spin" style={{ animationDuration: '3s' }} />
                       </div>
                     </div>
                     
@@ -680,73 +1423,344 @@ export default function Home() {
                       思考の軌跡を読み解いています...
                     </h3>
                     
-                    <div style={{ display: "flex", alignItems: "center", gap: "8px", color: "#605e5c", fontSize: "14px", marginTop: "4px" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px", color: "#605e5c", fontSize: "14px" }}>
                       <Loader2 size={16} className="animate-spin" />
-                      <span>消しゴムの跡や、ペンの迷いも分析中</span>
-                    </div>
-                    
-                    {/* プログレスバー風の装飾 */}
-                    <div style={{ width: "100%", height: "4px", backgroundColor: "#f3f2f1", borderRadius: "2px", overflow: "hidden", marginTop: "12px", position: "relative" }}>
-                      <div 
-                        style={{ 
-                          position: "absolute",
-                          height: "100%", 
-                          backgroundColor: "#5c2d91", 
-                          width: "30%",
-                          borderRadius: "2px",
-                          animation: "progress-bounce 1.5s ease-in-out infinite alternate" 
-                        }} 
-                      />
+                      <span>消しゴムで直した跡や、じっくり考えた時間を分析中！</span>
                     </div>
                   </div>
                 </div>
               )}
 
-              {/* AI Summary and Debug Panel */}
-              {activePage.aiSummary && (
+              {/* 🌟 ほめる先生の称賛ポップアップカード（モーダル） */}
+              {showPraiseModal && (activePage.thoughtTypeBadge || activePage.aiSummary) && (
                 <div style={{
                   position: "absolute",
-                  bottom: "32px",
-                  right: "32px",
-                  width: "400px",
-                  backgroundColor: "#ffffff",
-                  borderRadius: "16px",
-                  boxShadow: "0 12px 36px rgba(0,0,0,0.15)",
-                  padding: "24px",
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: "16px",
-                  zIndex: 40,
-                  border: "1px solid #e1dfdd",
+                  top: 0, left: 0, width: "100%", height: "100%",
+                  backgroundColor: "rgba(15, 23, 42, 0.6)",
+                  backdropFilter: "blur(4px)",
+                  display: "flex", justifyContent: "center", alignItems: "center",
+                  zIndex: 60, padding: "20px"
                 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: "8px", color: "#5c2d91", fontWeight: "bold", fontSize: "18px" }}>
-                      <Bot size={24} />
-                      先生からの全体コメント
-                    </div>
-                    <button 
-                      onClick={() => updateActivePage(p => ({ ...p, aiSummary: undefined }))}
-                      style={{ background: "none", border: "none", cursor: "pointer", color: "#605e5c", padding: "4px" }}
+                  <div style={{
+                    backgroundColor: "#ffffff",
+                    borderRadius: "24px",
+                    boxShadow: "0 25px 60px rgba(0,0,0,0.3)",
+                    maxWidth: "580px",
+                    width: "100%",
+                    maxHeight: "90vh",
+                    overflowY: "auto",
+                    padding: "32px",
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: "20px",
+                    position: "relative",
+                    border: "1px solid #f1f5f9"
+                  }}>
+                    {/* 閉じるボタン */}
+                    <button
+                      onClick={() => setShowPraiseModal(false)}
+                      style={{
+                        position: "absolute", top: "18px", right: "18px",
+                        background: "#f1f5f9", border: "none", borderRadius: "50%",
+                        width: "36px", height: "36px", cursor: "pointer",
+                        display: "flex", justifyContent: "center", alignItems: "center",
+                        color: "#64748b"
+                      }}
                     >
-                      <Trash2 size={18} />
+                      <X size={20} />
+                    </button>
+
+                    {/* 称号バッジヘッダー */}
+                    <div style={{ textAlign: "center", display: "flex", flexDirection: "column", alignItems: "center", gap: "8px" }}>
+                      <div style={{
+                        display: "inline-flex", alignItems: "center", gap: "6px",
+                        background: "linear-gradient(135deg, #fef3c7 0%, #fde68a 100%)",
+                        color: "#b45309", padding: "6px 16px", borderRadius: "9999px",
+                        fontWeight: "bold", fontSize: "14px", border: "1px solid #fcd34d"
+                      }}>
+                        <Award size={18} />
+                        思考スタイル認定
+                      </div>
+
+                      <h2 style={{
+                        fontSize: "26px", fontWeight: "900", margin: "4px 0",
+                        color: "#1e293b", letterSpacing: "-0.5px"
+                      }}>
+                        {activePage.thoughtTypeBadge || "粘り強いチャレンジャー型"}
+                      </h2>
+                      <p style={{ margin: 0, fontSize: "13px", color: "#64748b" }}>
+                        君が自分で試行錯誤してペンを動かした素晴らしい証拠です！
+                      </p>
+                    </div>
+
+                    {/* 称賛ポイント3選 */}
+                    {activePage.analysisNotice && (
+                      <div style={{ background: "#eff6ff", border: "1px solid #bfdbfe", color: "#1e40af", borderRadius: "10px", padding: "10px 12px", fontSize: "12px", lineHeight: 1.5 }}>
+                        <strong>{activePage.analysisSource === "local_fallback" ? "端末内のプロセス分析で応援中" : "分析方法のお知らせ"}</strong><br />
+                        {activePage.analysisNotice}
+                      </div>
+                    )}
+
+                    {activePage.processMetrics && (
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "8px" }}>
+                        {[
+                          ["書いた筆跡", `${activePage.processMetrics.stroke_count}本`],
+                          ["書き直し", `${activePage.processMetrics.revision_count}回`],
+                          ["考えた時間", `${Math.round(activePage.processMetrics.session_seconds)}秒`],
+                        ].map(([label, value]) => (
+                          <div key={label} style={{ textAlign: "center", background: "#faf5ff", border: "1px solid #e9d5ff", borderRadius: "10px", padding: "9px 6px" }}>
+                            <div style={{ color: "#6b21a8", fontWeight: 800, fontSize: "18px" }}>{value}</div>
+                            <div style={{ color: "#64748b", fontSize: "10px" }}>{label}</div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {activePage.learnerState && (
+                      <div style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "12px", padding: "12px 14px", display: "flex", flexDirection: "column", gap: "9px" }}>
+                        <div style={{ color: "#334155", fontWeight: 700, fontSize: "12px" }}>今の学び方に合わせたサポート</div>
+                        {[
+                          ["身につきの推定", activePage.learnerState.mastery, "#2563eb"],
+                          ["自分で進める力", activePage.learnerState.autonomous_engagement, "#7c3aed"],
+                          ["粘り強く戻る力", activePage.learnerState.persistence, "#059669"],
+                        ].map(([label, score, color]) => (
+                          <div key={String(label)} style={{ display: "grid", gridTemplateColumns: "112px 1fr", gap: "8px", alignItems: "center", fontSize: "11px", color: "#475569" }}>
+                            <span>{label}</span>
+                            <div style={{ height: "7px", background: "#e2e8f0", borderRadius: "999px", overflow: "hidden" }}>
+                              <div style={{ width: `${Math.round(Number(score) * 100)}%`, height: "100%", background: String(color), borderRadius: "999px" }} />
+                            </div>
+                          </div>
+                        ))}
+                        <div style={{ color: "#64748b", fontSize: "10px", lineHeight: 1.5 }}>
+                          人格や才能の評価ではなく、この端末で観測した学習行動からサポート量を調整するための推定です。
+                        </div>
+                      </div>
+                    )}
+
+                    {activePage.praisePoints && activePage.praisePoints.length > 0 && (
+                      <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                        <div style={{ fontSize: "14px", fontWeight: "bold", color: "#334155", display: "flex", alignItems: "center", gap: "6px" }}>
+                          <Sparkle size={16} color="#eab308" />
+                          先生が見つけた、君のすごいところ！
+                        </div>
+                        {activePage.praisePoints.map((point, idx) => (
+                          <div key={idx} style={{
+                            display: "flex", alignItems: "flex-start", gap: "12px",
+                            backgroundColor: "#f8fafc", padding: "12px 16px", borderRadius: "12px",
+                            border: "1px solid #e2e8f0"
+                          }}>
+                            <CheckCircle2 size={20} color="#10b981" style={{ flexShrink: 0, marginTop: "2px" }} />
+                            <span style={{ fontSize: "14px", color: "#1e293b", lineHeight: "1.5", fontWeight: "500" }}>
+                              {point}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* 先生からの温かいメッセージ */}
+                    {(activePage.encouragementMessage || activePage.aiSummary) && (
+                      <div style={{
+                        backgroundColor: "#f5f3ff", padding: "18px 20px", borderRadius: "16px",
+                        border: "1.5px solid #ddd6fe", display: "flex", flexDirection: "column", gap: "8px"
+                      }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "#5c2d91", fontWeight: "bold", fontSize: "15px" }}>
+                          <Bot size={20} />
+                          先生からのメッセージ
+                        </div>
+                        <p style={{ margin: 0, fontSize: "14px", color: "#334155", lineHeight: "1.7", whiteSpace: "pre-wrap" }}>
+                          {activePage.encouragementMessage || activePage.aiSummary}
+                        </p>
+                      </div>
+                    )}
+
+                    {/* AI問題・文字認識の確認 */}
+                    {activePage.recognizedContent && (
+                      <div style={{ fontSize: "12px", color: "#64748b", backgroundColor: "#f8fafc", padding: "12px 14px", borderRadius: "10px", border: "1px solid #e2e8f0", display: "flex", flexDirection: "column", gap: "6px" }}>
+                        {activePage.recognizedContent.recognized_question && (
+                          <div style={{ color: "#334155" }}>
+                            <strong style={{ color: "#5c2d91" }}>📖 取り組んだ問題:</strong> {activePage.recognizedContent.recognized_question}
+                          </div>
+                        )}
+                        <div>
+                          <strong>✍️ 読み取った式・答え:</strong> {activePage.recognizedContent.current_answer || "手書き解答"}
+                        </div>
+                        {activePage.recognizedContent.erased_attempts && activePage.recognizedContent.erased_attempts !== "なし" && (
+                          <div style={{ color: "#e11d48" }}>
+                            <strong>💡 消去した試行錯誤:</strong> {activePage.recognizedContent.erased_attempts}
+                          </div>
+                        )}
+                        {activePage.recognitionConfidence !== undefined && activePage.recognitionConfidence < 0.7 && (
+                          <div style={{ color: "#92400e", background: "#fffbeb", borderRadius: "7px", padding: "7px" }}>
+                            画像認識の確信度が低めです。問題文や式が合っているか確認してください。
+                            {activePage.recognitionUncertainties?.length ? `（${activePage.recognitionUncertainties.join("、")}）` : ""}
+                          </div>
+                        )}
+                        <button
+                          onClick={() => {
+                            const currentQuestion = activePage.recognizedContent?.recognized_question || activePage.questionText || "";
+                            const corrected = window.prompt("認識した問題文を修正してください。筆記内容は消えません。", currentQuestion);
+                            if (corrected === null) return;
+                            updateActivePage(page => ({ ...page, questionText: corrected.trim() || undefined }));
+                            setShowPraiseModal(false);
+                          }}
+                          style={{ alignSelf: "flex-start", border: "none", background: "transparent", color: "#6d28d9", cursor: "pointer", padding: 0, fontSize: "11px", textDecoration: "underline" }}
+                        >
+                          認識した問題を修正する
+                        </button>
+                      </div>
+                    )}
+
+                    {activePage.intervention && activePage.intervention.hint_levels.length > 0 && (
+                      <button
+                        onClick={() => {
+                          setActiveAssistance(activePage.intervention ?? null);
+                          setShowPraiseModal(false);
+                        }}
+                        style={{ border: "1px solid #c4b5fd", background: "#f5f3ff", color: "#5b21b6", padding: "10px 14px", borderRadius: "10px", cursor: "pointer", fontWeight: 700 }}
+                      >
+                        必要なら、小さなヒントを使う
+                      </button>
+                    )}
+
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "8px", color: "#64748b", fontSize: "12px" }}>
+                      <span>このほめ方はどうだった？</span>
+                      <button onClick={() => rateFeedback("helpful")} style={{ border: activePage.feedbackRating === "helpful" ? "2px solid #10b981" : "1px solid #cbd5e1", background: "#ffffff", borderRadius: "999px", padding: "6px 10px", cursor: "pointer" }}>👍 役立った</button>
+                      <button onClick={() => rateFeedback("not_for_me")} style={{ border: activePage.feedbackRating === "not_for_me" ? "2px solid #f59e0b" : "1px solid #cbd5e1", background: "#ffffff", borderRadius: "999px", padding: "6px 10px", cursor: "pointer" }}>少し違った</button>
+                    </div>
+
+                    {/* ボタン */}
+                    <button
+                      onClick={() => setShowPraiseModal(false)}
+                      style={{
+                        backgroundColor: "#5c2d91", color: "#ffffff", border: "none",
+                        padding: "14px 20px", borderRadius: "12px", fontSize: "16px",
+                        fontWeight: "bold", cursor: "pointer", boxShadow: "0 4px 12px rgba(92, 45, 145, 0.3)",
+                        transition: "transform 0.1s ease"
+                      }}
+                    >
+                      💮 ノートの花丸と赤ペンを見る！
                     </button>
                   </div>
-                  
-                  <div style={{ 
-                    color: "#323130", 
-                    fontSize: "15px", 
-                    lineHeight: "1.6", 
-                    maxHeight: "300px", 
-                    overflowY: "auto",
-                    whiteSpace: "pre-wrap"
-                  }}>
-                    {activePage.aiSummary}
-                  </div>
+                </div>
+              )}
 
-                  <div style={{ borderTop: "1px solid #edebe9", paddingTop: "12px", display: "flex", justifyContent: "flex-end" }}>
+              {/* 自由問題入力ダイアログ */}
+              {showCustomProblemModal && (
+                <div style={{
+                  position: "fixed", top: 0, left: 0, width: "100vw", height: "100vh",
+                  backgroundColor: "rgba(0, 0, 0, 0.5)", zIndex: 100,
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  backdropFilter: "blur(4px)"
+                }}>
+                  <div style={{
+                    backgroundColor: "#ffffff", borderRadius: "16px", padding: "28px",
+                    maxWidth: "520px", width: "90%", boxShadow: "0 20px 40px rgba(0,0,0,0.25)",
+                    display: "flex", flexDirection: "column", gap: "18px",
+                    border: "1px solid #e2e8f0"
+                  }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                        <span style={{ fontSize: "24px" }}>✏️</span>
+                        <h3 style={{ margin: 0, fontSize: "18px", fontWeight: "bold", color: "#1e293b" }}>自由な問題を設定</h3>
+                      </div>
+                      <button 
+                        onClick={() => setShowCustomProblemModal(false)}
+                        style={{ border: "none", background: "none", cursor: "pointer", color: "#94a3b8" }}
+                      >
+                        <X size={20} />
+                      </button>
+                    </div>
+
+                    <p style={{ margin: 0, fontSize: "13px", color: "#64748b", lineHeight: "1.5" }}>
+                      学校の宿題プリント、問題集の設問、手書きの計算など、解きたい問題を自由に入力してください。AIがその問題を理解してプロセスを褒めます！
+                    </p>
+
+                    <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                      <label style={{ fontSize: "12px", fontWeight: "bold", color: "#334155" }}>問題のタイトル / 教科:</label>
+                      <input 
+                        type="text"
+                        value={customProblemTitle}
+                        onChange={(e) => setCustomProblemTitle(e.target.value)}
+                        placeholder="例: 一次方程式、鶴亀算、英語ワークP15"
+                        style={{
+                          padding: "8px 12px", borderRadius: "8px", border: "1px solid #cbd5e1",
+                          fontSize: "14px", outline: "none"
+                        }}
+                      />
+                    </div>
+
+                    <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                      <label style={{ fontSize: "12px", fontWeight: "bold", color: "#334155" }}>問題文・数式:</label>
+                      <textarea
+                        value={customProblemText}
+                        onChange={(e) => setCustomProblemText(e.target.value)}
+                        placeholder="例: 方程式 4x - 9 = 15 を解け。&#10;例: 1本120円の鉛筆と1冊150円のノートを合わせて..."
+                        rows={4}
+                        style={{
+                          padding: "10px 12px", borderRadius: "8px", border: "1px solid #cbd5e1",
+                          fontSize: "14px", outline: "none", resize: "vertical", fontFamily: "inherit"
+                        }}
+                      />
+                    </div>
+
+                    <label style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "13px", color: "#475569", cursor: "pointer" }}>
+                      <input 
+                        type="checkbox"
+                        checked={placeCustomTextOnCanvas}
+                        onChange={(e) => setPlaceCustomTextOnCanvas(e.target.checked)}
+                      />
+                      ノートの上部に問題文をテキストとして配置する
+                    </label>
+
+                    <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px", marginTop: "6px" }}>
+                      <button
+                        onClick={() => setShowCustomProblemModal(false)}
+                        style={{
+                          padding: "8px 16px", borderRadius: "8px", border: "1px solid #cbd5e1",
+                          backgroundColor: "#f8fafc", color: "#475569", cursor: "pointer", fontSize: "14px"
+                        }}
+                      >
+                        キャンセル
+                      </button>
+                      <button
+                        onClick={handleApplyCustomProblem}
+                        style={{
+                          padding: "8px 20px", borderRadius: "8px", border: "none",
+                          backgroundColor: "#5c2d91", color: "#ffffff", fontWeight: "bold",
+                          cursor: "pointer", fontSize: "14px", boxShadow: "0 2px 8px rgba(92, 45, 145, 0.3)"
+                        }}
+                      >
+                        決定してノートを作成
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* モーダルが閉じた後も表示されるフローティングボタン */}
+              {activePage.thoughtTypeBadge && !showPraiseModal && (
+                <div style={{
+                  position: "absolute", bottom: "24px", right: "24px",
+                  display: "flex", flexDirection: "column", gap: "10px", zIndex: 40
+                }}>
+                  <button
+                    onClick={() => setShowPraiseModal(true)}
+                    style={{
+                      display: "flex", alignItems: "center", gap: "8px",
+                      backgroundColor: "#ffffff", color: "#5c2d91",
+                      border: "2px solid #5c2d91", padding: "10px 18px", borderRadius: "9999px",
+                      fontSize: "14px", fontWeight: "bold", cursor: "pointer",
+                      boxShadow: "0 4px 16px rgba(0,0,0,0.15)"
+                    }}
+                  >
+                    <Award size={18} color="#f59e0b" />
+                    褒めカードをもう一度見る ({activePage.thoughtTypeBadge})
+                  </button>
+
+                  {activePage.rawAiResponse !== undefined && (
                     <button
                       onClick={() => {
-                        if (!activePage.rawAiResponse) return;
                         const blob = new Blob([JSON.stringify(activePage.rawAiResponse, null, 2)], { type: 'application/json' });
                         const url = URL.createObjectURL(blob);
                         const a = document.createElement('a');
@@ -756,16 +1770,15 @@ export default function Home() {
                         URL.revokeObjectURL(url);
                       }}
                       style={{
-                        display: "flex", alignItems: "center", gap: "6px",
-                        background: "#f3f2f1", color: "#605e5c", border: "none",
-                        padding: "8px 12px", borderRadius: "4px", fontSize: "12px",
-                        cursor: "pointer", fontWeight: "bold"
+                        display: "flex", alignItems: "center", gap: "6px", alignSelf: "flex-end",
+                        background: "rgba(255,255,255,0.9)", color: "#64748b", border: "1px solid #cbd5e1",
+                        padding: "6px 12px", borderRadius: "6px", fontSize: "11px", cursor: "pointer"
                       }}
                     >
-                      <Download size={14} />
-                      AI生データ(JSON)をダウンロード
+                      <Download size={12} />
+                      AI生データ(JSON)
                     </button>
-                  </div>
+                  )}
                 </div>
               )}
             </div>
@@ -773,6 +1786,7 @@ export default function Home() {
           </div>
         </div>
       </div>
+
     </main>
   );
 }
