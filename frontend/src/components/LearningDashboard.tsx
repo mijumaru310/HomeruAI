@@ -1,6 +1,7 @@
 "use client";
 
 import React from "react";
+import ModalLayer from "./ModalLayer";
 import { Award, Brain, Flame, Footprints, Sparkles, TrendingUp, X } from "lucide-react";
 import type { GrowthPoint, LearnerDashboardData } from "../types/canvas";
 
@@ -25,7 +26,7 @@ export default function LearningDashboard({ data, loading, onClose }: Props) {
   const state = data?.state;
   const xpRatio = data ? data.level_xp / data.xp_to_next_level : 0;
   return (
-    <div className="growth-modal" role="dialog" aria-modal="true" aria-label="学びの成長ダッシュボード">
+    <ModalLayer title="学びの成長ダッシュボード" onClose={onClose}>
       <section className="growth-dashboard">
         <header className="growth-dashboard-header">
           <div>
@@ -112,6 +113,6 @@ export default function LearningDashboard({ data, loading, onClose }: Props) {
           </div>
         )}
       </section>
-    </div>
+    </ModalLayer>
   );
 }

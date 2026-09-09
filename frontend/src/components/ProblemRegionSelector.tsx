@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useMemo, useRef, useState } from "react";
+import ModalLayer from "./ModalLayer";
 import { Crop, X } from "lucide-react";
 
 export interface NormalizedRegion {
@@ -46,11 +47,8 @@ export default function ProblemRegionSelector({ imageUrl, initialRegion, onApply
   };
 
   return (
-    <div role="dialog" aria-modal="true" aria-label="分析する問題範囲を選択" style={{
-      position: "fixed", inset: 0, zIndex: 120, background: "rgba(15, 23, 42, 0.62)",
-      display: "flex", alignItems: "center", justifyContent: "center", padding: "24px",
-    }}>
-      <div style={{ width: "min(920px, 96vw)", maxHeight: "92vh", background: "white", borderRadius: "18px", padding: "18px", boxShadow: "0 24px 70px rgba(0,0,0,.35)", display: "flex", flexDirection: "column", gap: "14px" }}>
+    <ModalLayer title="分析する問題範囲を選択" onClose={onClose}>
+      <div style={{ width: "100%", background: "white", borderRadius: "18px", padding: "18px", display: "flex", flexDirection: "column", gap: "14px" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "12px" }}>
           <div>
             <strong style={{ display: "flex", alignItems: "center", gap: "7px", color: "#4c1d95" }}><Crop size={19} />分析する問題を囲む</strong>
@@ -87,7 +85,7 @@ export default function ProblemRegionSelector({ imageUrl, initialRegion, onApply
 
         <div style={{ display: "flex", justifyContent: "space-between", gap: "10px", flexWrap: "wrap" }}>
           <button onClick={() => setDraft(undefined)} style={{ border: "1px solid #cbd5e1", background: "white", borderRadius: "9px", padding: "9px 13px", cursor: "pointer" }}>画像全体を使う</button>
-          <div style={{ display: "flex", gap: "8px" }}>
+          <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
             <button onClick={onClose} style={{ border: "1px solid #cbd5e1", background: "white", borderRadius: "9px", padding: "9px 13px", cursor: "pointer" }}>キャンセル</button>
             <button
               onClick={() => onApply(draft && draft.width >= 0.03 && draft.height >= 0.03 ? draft : undefined)}
@@ -98,6 +96,6 @@ export default function ProblemRegionSelector({ imageUrl, initialRegion, onApply
           </div>
         </div>
       </div>
-    </div>
+    </ModalLayer>
   );
 }

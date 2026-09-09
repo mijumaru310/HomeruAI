@@ -5,6 +5,7 @@ import Canvas from "../components/Canvas";
 import ReplayPlayer from "../components/ReplayPlayer";
 import ProblemRegionSelector, { NormalizedRegion } from "../components/ProblemRegionSelector";
 import LearningDashboard from "../components/LearningDashboard";
+import ModalLayer from "../components/ModalLayer";
 import DebugPanel from "../components/DebugPanel";
 import { Stroke, CanvasImage, CanvasText, AIAnnotation, RecognizedContent, AnalysisResponseData, ProcessMetrics, LearnerState, AdaptiveIntervention, LearnerDashboardData, PointerDiagnostics } from "../types/canvas";
 import { jsPDF } from "jspdf";
@@ -1334,7 +1335,7 @@ export default function Home() {
                   width: "min(360px, calc(100% - 40px))", background: "#ffffff",
                   border: "2px solid #c4b5fd", borderRadius: "18px", padding: "16px",
                   boxShadow: "0 16px 36px rgba(76, 29, 149, 0.2)", display: "flex",
-                  flexDirection: "column", gap: "12px",
+                  flexDirection: "column", gap: "12px", maxHeight: "calc(100% - 48px)", overflowY: "auto",
                 }}>
                   <div style={{ display: "flex", gap: "10px", alignItems: "flex-start" }}>
                     <Bot size={24} color="#6d28d9" style={{ flexShrink: 0 }} />
@@ -1367,7 +1368,7 @@ export default function Home() {
               {analysisError && (
                 <div role="alert" style={{ position: "absolute", top: "16px", left: "50%", transform: "translateX(-50%)", zIndex: 55, width: "min(620px, calc(100% - 32px))", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", background: "#fff7ed", color: "#9a3412", border: "1px solid #fdba74", borderRadius: "12px", padding: "12px 14px", boxShadow: "0 8px 24px rgba(0,0,0,0.12)", fontSize: "13px" }}>
                   <span><strong>分析を完了できませんでした。</strong> {analysisError}</span>
-                  <button aria-label="エラーを閉じる" onClick={() => setAnalysisError(null)} style={{ border: "none", background: "transparent", color: "inherit", cursor: "pointer", padding: "2px" }}><X size={18} /></button>
+                  <button aria-label="エラーを閉じる" onClick={() => setAnalysisError(null)} style={{ border: "none", background: "transparent", color: "inherit", cursor: "pointer", padding: "2px", minWidth: "44px", minHeight: "44px", display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><X size={18} /></button>
                 </div>
               )}
               {showProblemRegionSelector && activePage.images[0] && (
@@ -1433,22 +1434,13 @@ export default function Home() {
 
               {/* 🌟 ほめる先生の称賛ポップアップカード（モーダル） */}
               {showPraiseModal && (activePage.thoughtTypeBadge || activePage.aiSummary) && (
-                <div style={{
-                  position: "absolute",
-                  top: 0, left: 0, width: "100%", height: "100%",
-                  backgroundColor: "rgba(15, 23, 42, 0.6)",
-                  backdropFilter: "blur(4px)",
-                  display: "flex", justifyContent: "center", alignItems: "center",
-                  zIndex: 60, padding: "20px"
-                }}>
+                <ModalLayer title="ほめるAIの振り返り" onClose={() => setShowPraiseModal(false)}>
                   <div style={{
                     backgroundColor: "#ffffff",
                     borderRadius: "24px",
                     boxShadow: "0 25px 60px rgba(0,0,0,0.3)",
                     maxWidth: "580px",
                     width: "100%",
-                    maxHeight: "90vh",
-                    overflowY: "auto",
                     padding: "32px",
                     display: "flex",
                     flexDirection: "column",
@@ -1642,17 +1634,12 @@ export default function Home() {
                       💮 ノートの花丸と赤ペンを見る！
                     </button>
                   </div>
-                </div>
+                </ModalLayer>
               )}
 
               {/* 自由問題入力ダイアログ */}
               {showCustomProblemModal && (
-                <div style={{
-                  position: "fixed", top: 0, left: 0, width: "100vw", height: "100vh",
-                  backgroundColor: "rgba(0, 0, 0, 0.5)", zIndex: 100,
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                  backdropFilter: "blur(4px)"
-                }}>
+                <ModalLayer title="自由な問題を設定" onClose={() => setShowCustomProblemModal(false)}>
                   <div style={{
                     backgroundColor: "#ffffff", borderRadius: "16px", padding: "28px",
                     maxWidth: "520px", width: "90%", boxShadow: "0 20px 40px rgba(0,0,0,0.25)",
@@ -1735,14 +1722,15 @@ export default function Home() {
                       </button>
                     </div>
                   </div>
-                </div>
+                </ModalLayer>
               )}
 
               {/* モーダルが閉じた後も表示されるフローティングボタン */}
               {activePage.thoughtTypeBadge && !showPraiseModal && (
                 <div style={{
                   position: "absolute", bottom: "24px", right: "24px",
-                  display: "flex", flexDirection: "column", gap: "10px", zIndex: 40
+                  display: "flex", flexDirection: "column", gap: "10px", zIndex: 40,
+                  maxWidth: "calc(100% - 48px)", maxHeight: "calc(100% - 48px)", overflowY: "auto"
                 }}>
                   <button
                     onClick={() => setShowPraiseModal(true)}

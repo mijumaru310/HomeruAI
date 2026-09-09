@@ -641,6 +641,59 @@ html, body {
 }
 
 /* 学習意欲を支える常設ステータス */
+.study-dialog {
+  position: fixed;
+  inset: 0;
+  margin: auto;
+  padding: 0;
+  width: min(1040px, calc(100% - 24px));
+  max-width: calc(100% - 24px);
+  max-height: calc(100dvh - 24px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+  border: 0;
+  border-radius: 18px;
+  background: #faf5ff;
+  color: #334155;
+  overflow: hidden;
+  box-shadow: 0 24px 70px #0f172a55;
+}
+.study-dialog[open] { display: flex; flex-direction: column; }
+.study-dialog::backdrop { background: #0f172a99; backdrop-filter: blur(4px); }
+.study-dialog-nav {
+  flex-shrink: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 14px;
+  background: white;
+  border-bottom: 1px solid #e9d5ff;
+}
+.study-dialog-nav button {
+  margin-left: auto;
+  min-height: 44px;
+  padding: 8px 14px;
+  border: 0;
+  border-radius: 10px;
+  background: #6d28d9;
+  color: white;
+  font-weight: 700;
+  cursor: pointer;
+}
+.study-dialog-scroll {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+  padding: 12px;
+}
+.study-dialog-scroll > div { margin-inline: auto; }
+.study-dialog-scroll .growth-dashboard { width: 100%; max-height: none; overflow: visible; }
+.study-dialog button { min-height: 44px; flex-shrink: 0; }
+.study-dialog .icon-close { min-width: 44px; }
+.debug-panel header { position: sticky; top: -14px; z-index: 1; background: #fffbeb; padding-block: 6px; }
+.debug-panel header button { min-width: 44px; min-height: 44px; }
+
 .motivation-bar {
   min-height: 58px;
   flex-shrink: 0;
@@ -697,18 +750,6 @@ html, body {
 .debug-button.active { color: #9a3412; background: #fff7ed; border-color: #fdba74; }
 
 /* 成長ダッシュボード */
-.growth-modal {
-  position: fixed;
-  inset: 0;
-  z-index: 150;
-  padding: 20px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(30, 10, 55, .62);
-  backdrop-filter: blur(8px);
-}
-
 .growth-dashboard {
   width: min(1040px, 96vw);
   max-height: 94vh;
@@ -823,7 +864,15 @@ html, body {
   .motivation-message { min-width: 170px; }
 }
 
-@media (max-width: 760px) {
+/* iPad / tablet portrait: keep the primary study actions roomy and reachable. */
+@media (max-width: 900px) {
+  .ribbon-content {
+    flex-wrap: wrap;
+    gap: 8px;
+    padding-inline: 8px;
+    overflow-x: hidden;
+  }
+  .ribbon-group { padding-right: 8px; }
   .onenote-header-top { align-items: stretch; flex-direction: column; gap: 6px; padding: 7px 10px; }
   .onenote-header-title-area { justify-content: space-between; }
   .onenote-header-title { white-space: nowrap; }
@@ -847,7 +896,6 @@ html, body {
   .page-sidebar { width: 112px; }
   .dashboard-button, .debug-button { padding: 8px 9px; font-size: 0; }
   .dashboard-button svg, .debug-button svg { width: 18px; height: 18px; }
-  .growth-modal { padding: 8px; }
   .growth-content { padding: 14px; }
   .level-hero { grid-template-columns: auto 1fr; }
   .streak-chip { grid-column: 1 / -1; }
