@@ -64,6 +64,7 @@ export interface RecognizedContent {
 
 export interface AnalysisResponseData {
   thought_type_badge: string;
+  feedback_condition?: "process_praise" | "neutral_summary";
   praise_points: string[];
   encouragement_message?: string;
   recognized_content?: RecognizedContent;

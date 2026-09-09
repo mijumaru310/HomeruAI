@@ -323,3 +323,43 @@ class ResearchStore:
                     "created_at": row["created_at"],
                 })
         return len(rows)
+
+    def export_study_events_csv(self, destination: str | Path) -> int:
+        """Export pseudonymous behavioral events for joining to an external survey."""
+        destination = Path(destination)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with self.connect() as connection:
+            rows = connection.execute("""
+                SELECT event_id, learner_hash, session_hash, problem_id, event_type,
+                       occurred_at_ms, payload_json, intervention_probability,
+                       feature_version, created_at
+                FROM study_events ORDER BY occurred_at_ms
+            """).fetchall()
+        fields = [
+            "event_id", "learner_hash", "session_hash", "problem_id", "event_type",
+            "occurred_at_ms", "feedback_condition", "analysis_id", "analysis_source",
+            "intervention_action", "intervention_probability", "feature_version",
+            "payload_json", "created_at",
+        ]
+        with destination.open("w", newline="", encoding="utf-8-sig") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fields)
+            writer.writeheader()
+            for row in rows:
+                payload = json.loads(row["payload_json"])
+                writer.writerow({
+                    "event_id": row["event_id"],
+                    "learner_hash": row["learner_hash"],
+                    "session_hash": row["session_hash"],
+                    "problem_id": row["problem_id"],
+                    "event_type": row["event_type"],
+                    "occurred_at_ms": row["occurred_at_ms"],
+                    "feedback_condition": payload.get("feedback_condition"),
+                    "analysis_id": payload.get("analysis_id"),
+                    "analysis_source": payload.get("source"),
+                    "intervention_action": payload.get("intervention_action") or payload.get("action"),
+                    "intervention_probability": row["intervention_probability"],
+                    "feature_version": row["feature_version"],
+                    "payload_json": row["payload_json"],
+                    "created_at": row["created_at"],
+                })
+        return len(rows)

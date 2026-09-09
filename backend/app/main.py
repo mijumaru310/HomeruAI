@@ -84,6 +84,7 @@ async def analyze_strokes(request: AnalysisRequest):
             model="gemini",
             question_text=request.questionText,
             praise_mode=request.praiseMode,
+            feedback_condition=request.feedbackCondition,
             source_image_b64=request.sourceImage,
             source_type=request.sourceType,
             analysis_bounds=request.analysisBounds,

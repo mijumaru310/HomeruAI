@@ -178,7 +178,7 @@ interface Stroke {
 
 ### POST `/api/analyze`
 
-必須: `questionId`、1件以上の `strokes`、Ghost `image`。任意で `questionText`、`sourceImage`、`sourceType`、`analysisBounds`、`learnerId`、`sessionId`、`problemDifficulty`、`hintCount` を受け取る。
+必須: `questionId`、1件以上の `strokes`、Ghost `image`。任意で `questionText`、`sourceImage`、`sourceType`、`analysisBounds`、`learnerId`、`sessionId`、`problemDifficulty`、`hintCount`、`feedbackCondition` を受け取る。`feedbackCondition=neutral_summary` は研究比較用で、称賛・赤ペン・途中介入を行わず操作量だけを表示する。
 
 応答には `praise_points`、`praise_evidence`、`recognized_content`、`recognition_confidence`、`process_metrics`、`process_evidence`、`learner_state`、`intervention`、`source`、`provider_error_category`、`notice` を含む。
 
@@ -210,6 +210,7 @@ Gemini設定、構造化出力スキーマ互換性、ローカルフォール�
 - Pointer Events の `pointerType`、筆圧、傾き、接触幅、合成イベント数を Debug パネルで確認できる。Apple Pencil入力中の指接触は描画終了として扱わず、パームリジェクションとして無視する。
 - `getCoalescedEvents()` が利用できる環境では、そのサンプルを筆跡へ取り込み、高速なPencil入力の欠落を減らす。
 - 丸・下線・花丸は根拠IDごとに一つだけ描き、称賛文はキャンバス上へ重ねず称賛カードへ分離する。過去保存データに重複があってもフロントエンドで重複描画を防ぐ。
+- 称賛は固定能力・人格ラベルと誇張を避け、「観測した行動→学習上の意味」を具体的に伝え、次の行動の選択を本人へ残す。
 
 ## 9. 障害時の挙動
 
@@ -278,6 +279,7 @@ npm run build
 
 ```powershell
 backend\venv\Scripts\python.exe backend\scripts\export_training_data.py
+backend\venv\Scripts\python.exe backend\scripts\export_study_events.py --participant-code P001
 backend\venv\Scripts\python.exe -m pip install -r backend\requirements-ml.txt
 backend\venv\Scripts\python.exe backend\scripts\train_support_model.py
 ```
@@ -295,6 +297,9 @@ backend\venv\Scripts\python.exe backend\scripts\train_support_model.py
 - 写真、PDF、白紙、テキスト問題、問題範囲切り出し
 - X1〜X4 状態推定、段階的ヒント、リアルタイム介入
 - IndexedDB 自動保存、擬似匿名イベント、SQLite保存、CSV出力、任意再学習
+- 成人向けの難度別デモ7問と、外部アンケート用のプロセス称賛／中立フィードバック比較条件
+
+成人予備実験の対象、先行研究、外部アンケート項目、A/B実施URL、分析計画、研究上の限界は [`RESEARCH_PROTOCOL.md`](./RESEARCH_PROTOCOL.md) を参照する。アンケートや同意フォームはアプリ内に実装せず、研究責任者情報と撤回方法を含む外部フォームで実施する。
 
 研究前に追加検討する項目:
 

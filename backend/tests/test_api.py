@@ -47,6 +47,27 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(body["process_metrics"]["stroke_count"], 1)
         self.assertEqual(len(body["praise_points"]), 3)
 
+    def test_neutral_study_condition_has_no_praise_or_intervention(self):
+        response = self.client.post("/api/analyze", json={
+            "questionId": "q_03",
+            "feedbackCondition": "neutral_summary",
+            "image": ONE_PIXEL_PNG,
+            "strokes": [{
+                "strokeId": "s-neutral", "type": "draw", "startTime": 1_000,
+                "endTime": 2_000, "points": [], "pointCount": 8,
+            }],
+        })
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["feedback_condition"], "neutral_summary")
+        self.assertEqual(body["thought_type_badge"], "取り組み記録")
+        self.assertEqual(body["annotations"], [])
+        self.assertEqual(body["intervention"]["action"], "wait")
+        combined = " ".join(body["praise_points"])
+        self.assertNotIn("すばらしい", combined)
+        self.assertNotIn("いいね", combined)
+
     def test_invalid_stroke_type_is_rejected_without_echoing_body(self):
         response = self.client.post("/api/analyze", json={
             "questionId": "q_02",

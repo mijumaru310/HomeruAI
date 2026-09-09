@@ -71,6 +71,21 @@ class ProcessAnalysisTests(unittest.TestCase):
         self.assertEqual(len({item.evidence_id for item in response.annotations}), len(response.annotations))
         self.assertTrue(all(item.comment is None for item in response.annotations))
 
+    def test_local_praise_describes_behavior_without_fixed_ability_label(self):
+        response = build_local_fallback(
+            self.strokes,
+            "一次方程式",
+            "support",
+            calculate_pauses(self.strokes),
+            "テスト",
+        )
+
+        text = " ".join(response.praise_points)
+        self.assertNotIn("天才", text)
+        self.assertNotIn("頭がいい", text)
+        self.assertNotIn("タイプ", response.thought_type_badge)
+        self.assertIn("書き直", text)
+
     def test_overnight_gap_is_not_misclassified_as_thinking(self):
         next_day = [
             stroke("s1", 1_000, 2_000),

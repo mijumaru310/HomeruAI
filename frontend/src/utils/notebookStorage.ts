@@ -1,7 +1,7 @@
 const DATABASE_NAME = "homeruai-notebook";
 const DATABASE_VERSION = 1;
 const STORE_NAME = "workspace";
-const WORKSPACE_KEY = "current";
+const DEFAULT_WORKSPACE_KEY = "current";
 
 export interface StoredWorkspace<TSections> {
   schemaVersion: 1;
@@ -29,14 +29,14 @@ const openDatabase = (): Promise<IDBDatabase> =>
     request.onerror = () => reject(request.error ?? new Error("ノート保存領域を開けませんでした。"));
   });
 
-export async function loadWorkspace<TSections>(): Promise<StoredWorkspace<TSections> | null> {
+export async function loadWorkspace<TSections>(workspaceKey = DEFAULT_WORKSPACE_KEY): Promise<StoredWorkspace<TSections> | null> {
   if (typeof indexedDB === "undefined") return null;
 
   const database = await openDatabase();
   try {
     return await new Promise((resolve, reject) => {
       const transaction = database.transaction(STORE_NAME, "readonly");
-      const request = transaction.objectStore(STORE_NAME).get(WORKSPACE_KEY);
+      const request = transaction.objectStore(STORE_NAME).get(workspaceKey);
       request.onsuccess = () => resolve((request.result as StoredWorkspace<TSections> | undefined) ?? null);
       request.onerror = () => reject(request.error ?? new Error("保存済みノートを読み込めませんでした。"));
     });
@@ -45,14 +45,14 @@ export async function loadWorkspace<TSections>(): Promise<StoredWorkspace<TSecti
   }
 }
 
-export async function saveWorkspace<TSections>(workspace: StoredWorkspace<TSections>): Promise<void> {
+export async function saveWorkspace<TSections>(workspace: StoredWorkspace<TSections>, workspaceKey = DEFAULT_WORKSPACE_KEY): Promise<void> {
   if (typeof indexedDB === "undefined") return;
 
   const database = await openDatabase();
   try {
     await new Promise<void>((resolve, reject) => {
       const transaction = database.transaction(STORE_NAME, "readwrite");
-      transaction.objectStore(STORE_NAME).put(workspace, WORKSPACE_KEY);
+      transaction.objectStore(STORE_NAME).put(workspace, workspaceKey);
       transaction.oncomplete = () => resolve();
       transaction.onerror = () => reject(transaction.error ?? new Error("ノートを保存できませんでした。"));
       transaction.onabort = () => reject(transaction.error ?? new Error("ノートの保存が中断されました。"));

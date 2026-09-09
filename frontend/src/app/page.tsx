@@ -23,12 +23,16 @@ import { renderPdfPages } from "../utils/pdfImporter";
 import { createId, getOrCreateLearnerId, recordStudyEvent, requestLearnerDashboard, requestPauseAssist } from "../utils/adaptiveLearning";
 
 export const PRESET_QUESTIONS = [
-  { id: "custom", label: "📝 白紙ノート (手書きで自由に解く)", title: "自由ノート", text: "" },
-  { id: "input_custom", label: "✏️ 自由な問題を入力する...", title: "任意の問題", text: "" },
-  { id: "photo_problem", label: "📸 教材・プリント写真を貼る", title: "教材プリント", text: "" },
-  { id: "q_01", label: "📐 直角三角形の面積 (基本)", title: "直角三角形の面積", text: "【問題】辺の長さが a=6, b=8, c=10 の\n直角三角形の面積を求めよ。" },
-  { id: "q_02", label: "🔢 一次方程式の計算 (基本)", title: "一次方程式の計算", text: "【問題】方程式を解け。\n3x + 5 = 20" },
-  { id: "q_03", label: "🏷️ 割合と割引の計算", title: "割合と割引の計算", text: "【問題】定価 2,400円の品物が 30%引き で\n売られています。売値はいくら？" },
+  { id: "custom", label: "📝 白紙ノート（自由に解く）", title: "自由ノート", text: "", difficulty: undefined },
+  { id: "input_custom", label: "✏️ 自由な問題を入力する...", title: "任意の問題", text: "", difficulty: undefined },
+  { id: "photo_problem", label: "📸 教材・プリント写真を貼る", title: "教材プリント", text: "", difficulty: undefined },
+  { id: "q_03", label: "🌱 やさしい｜30%引き", title: "買い物の割引", text: "【問題】定価2,400円の商品が30%引きです。\n支払う金額はいくらですか？", difficulty: 0.30 },
+  { id: "q_04", label: "🌱 やさしい｜レシピの分量", title: "レシピの分量", text: "【問題】4人分で小麦粉240g使います。\n同じ割合で6人分作ると何g必要ですか？", difficulty: 0.34 },
+  { id: "q_05", label: "🌿 標準｜お得な買い方", title: "単価の比較", text: "【問題】Aは6本で780円、Bは10本で1,250円です。\n1本あたり安いのはどちらですか？", difficulty: 0.45 },
+  { id: "q_06", label: "🌿 標準｜4日間の平均", title: "4日間の平均", text: "【問題】4日間の学習時間は20分、35分、25分、40分でした。\n1日あたりの平均は何分ですか？", difficulty: 0.48 },
+  { id: "q_02", label: "🌿 標準｜一次方程式", title: "一次方程式", text: "【問題】方程式を解いてください。\n3x + 5 = 20", difficulty: 0.52 },
+  { id: "q_01", label: "🌳 挑戦｜直角三角形の面積", title: "直角三角形の面積", text: "【問題】辺の長さが6cm、8cm、10cmの\n三角形の面積を求めてください。", difficulty: 0.58 },
+  { id: "q_07", label: "🌳 挑戦｜予定から逆算", title: "予定から逆算", text: "【問題】10時15分に到着したい。移動に45分、準備に25分かかります。\n準備を始める時刻は何時ですか？", difficulty: 0.62 },
 ];
 
 interface PageData {
@@ -57,7 +61,7 @@ interface PageData {
   skillTags?: string[];
   sourceType?: "typed" | "photo" | "pdf" | "blank" | "preset";
   hintCount?: number;
-  feedbackRating?: "helpful" | "not_for_me";
+  feedbackCondition?: "process_praise" | "neutral_summary";
   problemRegion?: NormalizedRegion;
   rawAiResponse?: unknown;
 }
@@ -83,6 +87,21 @@ const colors = [
   { value: "#00bcf2", label: "Cyan" },
   { value: "#e3008c", label: "Magenta" },
 ];
+
+function getStudyFeedbackCondition(): "process_praise" | "neutral_summary" {
+  if (typeof window === "undefined") return "process_praise";
+  return new URLSearchParams(window.location.search).get("studyFeedback") === "neutral"
+    ? "neutral_summary"
+    : "process_praise";
+}
+
+function getWorkspaceKey(): string {
+  if (typeof window === "undefined") return "current";
+  const participantCode = new URLSearchParams(window.location.search).get("participant")?.trim();
+  return participantCode && /^[A-Za-z0-9_-]{3,32}$/.test(participantCode)
+    ? `study_workspace_${participantCode}`
+    : "current";
+}
 
 async function prepareSourceImage(dataUrl: string, region?: NormalizedRegion): Promise<string> {
   const image = await new Promise<HTMLImageElement>((resolve, reject) => {
@@ -215,7 +234,7 @@ const RibbonHeader = React.memo(({
               style={{ fontSize: "12px", padding: "4px 8px", borderRadius: "4px", border: "1px solid #797775", backgroundColor: "#ffffff", color: "#323130" }}
               disabled={isAnalyzing}
             >
-              <option value="super_praise">💖 ほめちぎり (やる気UP!)</option>
+              <option value="super_praise">🌱 小さな一歩も見つける</option>
               <option value="support">🤝 いっしょに伴走 (標準)</option>
               <option value="challenge">🎯 チャレンジ (気づき重視)</option>
             </select>
@@ -514,7 +533,11 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    const learnerId = getOrCreateLearnerId();
+    const studyQuery = new URLSearchParams(window.location.search);
+    const participantCode = studyQuery.get("participant")?.trim();
+    const learnerId = participantCode && /^[A-Za-z0-9_-]{3,32}$/.test(participantCode)
+      ? `study_${participantCode}`
+      : getOrCreateLearnerId();
     learnerIdRef.current = learnerId;
     sessionIdRef.current = createId("session");
     recordStudyEvent({
@@ -530,7 +553,7 @@ export default function Home() {
   useEffect(() => {
     let cancelled = false;
 
-    void loadWorkspace<SectionData[]>()
+    void loadWorkspace<SectionData[]>(getWorkspaceKey())
       .then((stored) => {
         if (cancelled || !stored || stored.schemaVersion !== 1 || !Array.isArray(stored.sections) || stored.sections.length === 0) return;
 
@@ -576,7 +599,7 @@ export default function Home() {
         selectedPreset,
         praiseMode,
         pageTransforms,
-      })
+      }, getWorkspaceKey())
         .then(() => setSaveStatus("saved"))
         .catch((error) => {
           console.warn("Notebook autosave failed.", error);
@@ -633,6 +656,7 @@ export default function Home() {
   useEffect(() => {
     let cancelled = false;
     const evaluatePause = async () => {
+      if (getStudyFeedbackCondition() === "neutral_summary") return;
       const draws = activePage.strokes.filter(stroke => stroke.type === "draw");
       if (draws.length === 0 || isAnalyzing || isReplaying) return;
       const lastStrokeEnd = Math.max(...draws.map(stroke => stroke.endTime));
@@ -915,6 +939,13 @@ export default function Home() {
     if (presetId !== selectedPreset && activePage.strokes.some(stroke => !stroke.isErased) && !window.confirm("問題を切り替えると、このページの筆記内容が消えます。切り替えますか？")) return;
 
     setSelectedPreset(presetId);
+    recordStudyEvent({
+      learnerId: learnerIdRef.current,
+      sessionId: sessionIdRef.current,
+      problemId: presetId,
+      eventType: "next_problem_started",
+      data: { feedback_condition: getStudyFeedbackCondition() },
+    });
 
     updateActivePage(p => {
       const filteredTexts = p.texts.filter(t => !t.id.startsWith("txt_preset_"));
@@ -1052,11 +1083,14 @@ export default function Home() {
       const analysisBounds = selectedBounds ?? ghostResult.virtualBounds;
 
       const targetQuestionId = selectedPreset !== "custom" ? selectedPreset : (activePage.title || "custom");
+      const presetDifficulty = PRESET_QUESTIONS.find(question => question.id === selectedPreset)?.difficulty;
+      const currentFeedbackCondition = getStudyFeedbackCondition();
 
       const payload = {
         questionId: targetQuestionId,
         questionText: activePage.questionText || undefined,
         praiseMode: praiseMode,
+        feedbackCondition: currentFeedbackCondition,
         learnerId: learnerIdRef.current,
         sessionId: sessionIdRef.current,
         sourceType: activePage.sourceType ?? (refImage ? "photo" : activePage.questionText ? "typed" : "blank"),
@@ -1068,6 +1102,7 @@ export default function Home() {
           height: analysisBounds.height,
         } : undefined,
         hintCount: activePage.hintCount ?? 0,
+        problemDifficulty: presetDifficulty,
         strokes: strokesForAnalysis.map(s => {
           let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
           for (const p of s.points) {
@@ -1180,7 +1215,7 @@ export default function Home() {
       updateActivePage(p => ({
         ...p,
         aiAnnotations: annotations,
-        thoughtTypeBadge: result.thought_type_badge || "粘り強いチャレンジャー型",
+        thoughtTypeBadge: result.thought_type_badge || "今回見えた学び方",
         praisePoints: result.praise_points || [],
         encouragementMessage: result.encouragement_message || "",
         recognizedContent: result.recognized_content,
@@ -1194,7 +1229,7 @@ export default function Home() {
         recognitionConfidence: result.recognition_confidence,
         recognitionUncertainties: result.recognition_uncertainties,
         skillTags: result.skill_tags,
-        feedbackRating: undefined,
+        feedbackCondition: result.feedback_condition ?? currentFeedbackCondition,
         rawAiResponse: result
       }));
 
@@ -1208,6 +1243,7 @@ export default function Home() {
           source: result.source,
           recognition_confidence: result.recognition_confidence,
           intervention_action: result.intervention?.action,
+          feedback_condition: result.feedback_condition ?? currentFeedbackCondition,
         },
       });
 
@@ -1243,17 +1279,6 @@ export default function Home() {
     }));
     setActivePageId(newPageId);
   }, [activeSectionId]);
-
-  const rateFeedback = useCallback((rating: "helpful" | "not_for_me") => {
-    updateActivePage(page => ({ ...page, feedbackRating: rating }));
-    recordStudyEvent({
-      learnerId: learnerIdRef.current,
-      sessionId: sessionIdRef.current,
-      problemId: selectedPreset,
-      eventType: "feedback_rating",
-      data: { rating, analysis_source: activePage.analysisSource },
-    });
-  }, [activePage.analysisSource, selectedPreset, updateActivePage]);
 
   return (
     <main className="onenote-app">
@@ -1471,24 +1496,26 @@ export default function Home() {
                         fontWeight: "bold", fontSize: "14px", border: "1px solid #fcd34d"
                       }}>
                         <Award size={18} />
-                        思考スタイル認定
+                        {activePage.feedbackCondition === "neutral_summary" ? "今回の記録" : "今回見えた学び方"}
                       </div>
 
                       <h2 style={{
                         fontSize: "26px", fontWeight: "900", margin: "4px 0",
                         color: "#1e293b", letterSpacing: "-0.5px"
                       }}>
-                        {activePage.thoughtTypeBadge || "粘り強いチャレンジャー型"}
+                        {activePage.thoughtTypeBadge || "自分の考えを形にした"}
                       </h2>
                       <p style={{ margin: 0, fontSize: "13px", color: "#64748b" }}>
-                        君が自分で試行錯誤してペンを動かした素晴らしい証拠です！
+                        {activePage.feedbackCondition === "neutral_summary"
+                          ? "研究用の比較条件として、評価を加えず事実だけを表示しています。"
+                          : "実際に記録された筆記・見直し・再開から見つけました。"}
                       </p>
                     </div>
 
                     {/* 称賛ポイント3選 */}
                     {activePage.analysisNotice && (
                       <div style={{ background: "#eff6ff", border: "1px solid #bfdbfe", color: "#1e40af", borderRadius: "10px", padding: "10px 12px", fontSize: "12px", lineHeight: 1.5 }}>
-                        <strong>{activePage.analysisSource === "local_fallback" ? "端末内のプロセス分析で応援中" : "分析方法のお知らせ"}</strong><br />
+                        <strong>{activePage.analysisSource === "local_fallback" ? (activePage.feedbackCondition === "neutral_summary" ? "端末内で記録を集計" : "端末内のプロセス分析で応援中") : "分析方法のお知らせ"}</strong><br />
                         {activePage.analysisNotice}
                       </div>
                     )}
@@ -1508,7 +1535,7 @@ export default function Home() {
                       </div>
                     )}
 
-                    {activePage.learnerState && (
+                    {activePage.learnerState && activePage.feedbackCondition !== "neutral_summary" && (
                       <div style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "12px", padding: "12px 14px", display: "flex", flexDirection: "column", gap: "9px" }}>
                         <div style={{ color: "#334155", fontWeight: 700, fontSize: "12px" }}>今の学び方に合わせたサポート</div>
                         {[
@@ -1533,7 +1560,7 @@ export default function Home() {
                       <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
                         <div style={{ fontSize: "14px", fontWeight: "bold", color: "#334155", display: "flex", alignItems: "center", gap: "6px" }}>
                           <Sparkle size={16} color="#eab308" />
-                          先生が見つけた、君のすごいところ！
+                          {activePage.feedbackCondition === "neutral_summary" ? "記録された内容" : "取り組みの中で見つけた良かったところ"}
                         </div>
                         {activePage.praisePoints.map((point, idx) => (
                           <div key={idx} style={{
@@ -1558,7 +1585,7 @@ export default function Home() {
                       }}>
                         <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "#5c2d91", fontWeight: "bold", fontSize: "15px" }}>
                           <Bot size={20} />
-                          先生からのメッセージ
+                          {activePage.feedbackCondition === "neutral_summary" ? "記録" : "学習伴走者からのメッセージ"}
                         </div>
                         <p style={{ margin: 0, fontSize: "14px", color: "#334155", lineHeight: "1.7", whiteSpace: "pre-wrap" }}>
                           {activePage.encouragementMessage || activePage.aiSummary}
@@ -1603,7 +1630,7 @@ export default function Home() {
                       </div>
                     )}
 
-                    {activePage.intervention && activePage.intervention.hint_levels.length > 0 && (
+                    {activePage.feedbackCondition !== "neutral_summary" && activePage.intervention && activePage.intervention.hint_levels.length > 0 && (
                       <button
                         onClick={() => {
                           setActiveAssistance(activePage.intervention ?? null);
@@ -1615,12 +1642,6 @@ export default function Home() {
                       </button>
                     )}
 
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "8px", color: "#64748b", fontSize: "12px" }}>
-                      <span>このほめ方はどうだった？</span>
-                      <button onClick={() => rateFeedback("helpful")} style={{ border: activePage.feedbackRating === "helpful" ? "2px solid #10b981" : "1px solid #cbd5e1", background: "#ffffff", borderRadius: "999px", padding: "6px 10px", cursor: "pointer" }}>👍 役立った</button>
-                      <button onClick={() => rateFeedback("not_for_me")} style={{ border: activePage.feedbackRating === "not_for_me" ? "2px solid #f59e0b" : "1px solid #cbd5e1", background: "#ffffff", borderRadius: "999px", padding: "6px 10px", cursor: "pointer" }}>少し違った</button>
-                    </div>
-
                     {/* ボタン */}
                     <button
                       onClick={() => setShowPraiseModal(false)}
@@ -1631,7 +1652,7 @@ export default function Home() {
                         transition: "transform 0.1s ease"
                       }}
                     >
-                      💮 ノートの花丸と赤ペンを見る！
+                      {activePage.feedbackCondition === "neutral_summary" ? "ノートに戻る" : "💮 ノートの花丸と赤ペンを見る！"}
                     </button>
                   </div>
                 </ModalLayer>

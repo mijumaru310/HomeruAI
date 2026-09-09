@@ -155,6 +155,7 @@ class AnalysisRequest(BaseModel):
     questionId: str = Field(min_length=1, max_length=200)
     questionText: Optional[str] = Field(None, max_length=5_000)
     praiseMode: Literal["super_praise", "support", "challenge"] = "support"
+    feedbackCondition: Literal["process_praise", "neutral_summary"] = "process_praise"
     strokes: list[StrokeSchema] = Field(min_length=1, max_length=10_000)
     image: str = Field(min_length=1, max_length=12_000_000)
     sourceImage: Optional[str] = Field(None, max_length=12_000_000)
@@ -169,6 +170,7 @@ class AnalysisRequest(BaseModel):
 
 class AnalysisResponse(BaseModel):
     thought_type_badge: str = Field(default="粘り強いチャレンジャー型", min_length=1, max_length=80)
+    feedback_condition: Literal["process_praise", "neutral_summary"] = "process_praise"
     praise_points: list[str] = Field(default_factory=list, max_length=5)
     praise_evidence: list[PraiseEvidence] = Field(default_factory=list, max_length=5)
     encouragement_message: Optional[str] = Field(None, max_length=1_000)

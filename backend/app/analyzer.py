@@ -163,6 +163,11 @@ def _feedback_prompt(
 - 停止を一律に「迷い」と呼ばない。停止後に再開した場合は熟考と粘り強さとして扱う。
 - 消去は減点せず、見直しや自己修正の行動として扱う。
 - 習熟度や自主性の数値を本人に伝えない。人格を評価しない。
+- 「天才」「頭がいい」「○○タイプ」のような能力・人格ラベルを使わない。
+- 「絶対」「完璧」「ものすごい」など、観測量を超えた誇張を避ける。小さな行動も事実に即して認める。
+- 「次も必ず」「こうするべき」のように統制せず、次の行動は本人が選べる言い方にする。
+- 3件は可能な限り別の根拠を使い、「何をしたか→それが学びにどう役立つか」を短く伝える。
+- thought_type_badge は固定的なタイプ名ではなく、「書き直して確かめた」のような今回の行動を表す。
 - ヒントは答えを直接出さず、考える足場を易しい順に最大3段階作る。
 - ほめ方モードは {praise_mode}、選択済み介入方針は {intervention_action}。
 
@@ -191,31 +196,31 @@ def _local_praise(
     if "first_step" in by_kind:
         result.append(PraiseEvidence(
             evidence_id=by_kind["first_step"].evidence_id,
-            message="ノートに向かって最初の一画を動かしたことが、もう大切な前進だよ！",
+            message="まず一画を書いて、考えをノートの上で始められたね。この一歩が次の手掛かりにつながるよ。",
         ))
     revision = by_kind.get("successful_revision") or by_kind.get("revision")
     if revision:
         result.append(PraiseEvidence(
             evidence_id=revision.evidence_id,
-            message="一度書いた考えを見直して、自分で書き直そうとした力がすばらしい！",
+            message="一度書いたところを消して近くに書き直したね。自分の考えを確かめ直す行動ができているよ。",
         ))
     pause = by_kind.get("productive_pause") or by_kind.get("restart")
     if pause:
         result.append(PraiseEvidence(
             evidence_id=pause.evidence_id,
-            message=f"{pause.duration_seconds:g}秒じっくり考えたあと、もう一度ペンを動かせた粘り強さが光っているよ！",
+            message=f"{pause.duration_seconds:g}秒ペンが止まったあと、自分で書き始められたね。止まっても取り組みに戻れたことが大事だよ。",
         ))
     if len(result) < 3:
         persistence = by_kind.get("persistence") or (evidence[-1] if evidence else None)
         if persistence:
             result.append(PraiseEvidence(
                 evidence_id=persistence.evidence_id,
-                message=f"{metrics.stroke_count}本の筆跡を重ねて、自分の考えを形にし続けた集中力がいいね！",
+                message=f"{metrics.stroke_count}本の筆跡を使って、考えを見える形にしたね。途中の考えが残ると、次に確かめやすくなるよ。",
             ))
     if evidence:
         extra_messages = [
-            "正解を待つだけでなく、自分の手で考え始めた姿勢そのものがすばらしいよ！",
-            "小さな一歩を実際の筆跡として残せたことが、次につながる確かな力だよ！",
+            "答えを見る前に、自分の手で考えを記録できたね。今の書き方を手掛かりに次を選べるよ。",
+            "小さくても実際の筆跡を残せたね。どこから考えたかを後で振り返れるよ。",
         ]
         while len(result) < 3:
             result.append(PraiseEvidence(
@@ -225,9 +230,18 @@ def _local_praise(
     if state.mastery >= 0.7 and result:
         result[-1] = PraiseEvidence(
             evidence_id=result[-1].evidence_id,
-            message="自分の方針でここまで組み立てた力がついてきたね。次は別の考え方にも挑戦できそう！",
+            message="自分で手順を組み立ててここまで進めたね。続けるなら、別の考え方を試すことも自分で選べるよ。",
         )
     return result[:3]
+
+
+def _neutral_observations(metrics: ProcessMetrics) -> list[PraiseEvidence]:
+    """Non-evaluative comparison feedback for externally administered studies."""
+    return [
+        PraiseEvidence(evidence_id="study_metric_writing", message=f"筆記を{metrics.stroke_count}本記録しました。"),
+        PraiseEvidence(evidence_id="study_metric_revision", message=f"消去操作を{metrics.revision_count}回記録しました。"),
+        PraiseEvidence(evidence_id="study_metric_time", message=f"記録された取り組み時間は約{round(metrics.session_seconds)}秒でした。"),
+    ]
 
 
 def _annotation_for_evidence(
@@ -299,31 +313,46 @@ def build_local_fallback(
     provider_error_category: str = "unknown",
     previous_state: LearnerState | None = None,
     analysis_bounds: CanvasBoundsSchema | None = None,
+    feedback_condition: str = "process_praise",
 ) -> AnalysisResponse:
     metrics, evidence = extract_process_features(strokes)
     state = estimate_learner_state(metrics, previous=previous_state)
+    neutral = feedback_condition == "neutral_summary"
     intervention = choose_intervention(state, metrics, evidence)
-    praise = _local_praise(metrics, evidence, state, praise_mode)
-    annotations = _unique_annotations(praise, evidence, analysis_bounds)
+    if neutral:
+        intervention = intervention.model_copy(update={
+            "action": "wait",
+            "message": "研究用の比較条件では途中介入を表示しません。",
+            "hint_levels": [],
+        })
+    praise = _neutral_observations(metrics) if neutral else _local_praise(metrics, evidence, state, praise_mode)
+    annotations = [] if neutral else _unique_annotations(praise, evidence, analysis_bounds)
     return AnalysisResponse(
         thought_type_badge=(
-            "見直して伸びる自己修正タイプ" if metrics.revision_count else
-            "考えて進む粘り強いタイプ" if metrics.pause_count else
-            "一歩を形にするチャレンジャータイプ"
+            "取り組み記録" if neutral else
+            "書き直して確かめた" if metrics.revision_count else
+            "止まったあとにもう一度進めた" if metrics.restart_count else
+            "考えを一画から形にした"
         ),
+        feedback_condition="neutral_summary" if neutral else "process_praise",
         praise_points=[item.message for item in praise],
         praise_evidence=praise,
         encouragement_message=(
-            "ここまで自分の手で考えたことが確かな前進だよ。次の一歩も自分のペースで大丈夫！"
+            "記録を確認しました。ここで終えるか、次へ進むかを選んでください。" if neutral else
+            "ここまで自分の手で考えた過程が残っているよ。続け方は、自分のペースで選んで大丈夫。"
             if praise_mode != "challenge" else
-            "ここまで組み立てた力を使って、次は『なぜこの手順か』も考えてみよう！"
+            "ここまでの手順を使えそうだね。続けるなら、『なぜこの手順か』を考える方法もあるよ。"
         ),
         recognized_content=RecognizedContent(
             recognized_question=question_title,
             current_answer="AI画像認識を利用できないため、筆記内容の断定はしていません。",
             erased_attempts="消去履歴あり" if metrics.revision_count else "なし",
         ),
-        summary="正誤ではなく、実際に記録された筆記・消去・停止後の再開を根拠に称賛しました。",
+        summary=(
+            "記録された操作量と時間を、評価語を加えず表示しました。"
+            if neutral else
+            "正誤ではなく、実際に記録された筆記・消去・停止後の再開を根拠に称賛しました。"
+        ),
         annotations=annotations,
         source="local_fallback",
         provider_error_category=provider_error_category,
@@ -343,6 +372,7 @@ def analyze_process(
     model: str = "gemini",
     question_text: str | None = None,
     praise_mode: str = "support",
+    feedback_condition: str = "process_praise",
     *,
     source_image_b64: str | None = None,
     source_type: str = "blank",
@@ -358,10 +388,15 @@ def analyze_process(
     if not GEMINI_API_KEY or GEMINI_API_KEY == "your_gemini_api_key_here":
         return build_local_fallback(
             strokes, metadata["title"], praise_mode, calculate_pauses(strokes),
-            "Gemini APIキーが未設定のため、観測済みの筆記プロセスだけで称賛しました。",
+            (
+                "Gemini APIキーが未設定のため、観測済みの操作記録だけを集計しました。"
+                if feedback_condition == "neutral_summary" else
+                "Gemini APIキーが未設定のため、観測済みの筆記プロセスだけで称賛しました。"
+            ),
             provider_error_category="configuration",
             previous_state=previous_state,
             analysis_bounds=analysis_bounds,
+            feedback_condition=feedback_condition,
         )
 
     try:
@@ -397,10 +432,15 @@ def analyze_process(
         logger.warning("Recognition failed analysis_id=%s category=%s", analysis_id, category)
         fallback = build_local_fallback(
             strokes, metadata["title"], praise_mode, calculate_pauses(strokes),
-            f"Geminiの画像認識を完了できなかったため（{category}）、観測済みの筆記プロセスだけで称賛しました。",
+            (
+                f"Geminiの画像認識を完了できなかったため（{category}）、観測済みの操作記録だけを集計しました。"
+                if feedback_condition == "neutral_summary" else
+                f"Geminiの画像認識を完了できなかったため（{category}）、観測済みの筆記プロセスだけで称賛しました。"
+            ),
             provider_error_category=category,
             previous_state=previous_state,
             analysis_bounds=analysis_bounds,
+            feedback_condition=feedback_condition,
         )
         return fallback.model_copy(update={"analysis_id": analysis_id})
 
@@ -412,6 +452,31 @@ def analyze_process(
         problem_difficulty=problem_difficulty,
     )
     preliminary = choose_intervention(state, metrics, evidence)
+    if feedback_condition == "neutral_summary":
+        neutral = _neutral_observations(metrics)
+        return AnalysisResponse(
+            thought_type_badge="取り組み記録",
+            feedback_condition="neutral_summary",
+            praise_points=[item.message for item in neutral],
+            praise_evidence=neutral,
+            encouragement_message="記録を確認しました。ここで終えるか、次へ進むかを選んでください。",
+            recognized_content=RecognizedContent(
+                recognized_question=recognition.recognized_question or metadata["description"],
+                current_answer=" / ".join(recognition.current_work) or None,
+                erased_attempts=" / ".join(recognition.erased_work) or "なし",
+            ),
+            recognition_confidence=recognition.confidence,
+            recognition_uncertainties=recognition.uncertainties,
+            skill_tags=recognition.skill_tags,
+            summary="記録された操作量と時間を、評価語を加えず表示しました。",
+            annotations=[],
+            source="hybrid",
+            process_metrics=metrics,
+            process_evidence=evidence,
+            learner_state=state,
+            intervention=preliminary.model_copy(update={"action": "wait", "message": "研究用の比較条件では途中介入を表示しません。", "hint_levels": []}),
+            analysis_id=analysis_id,
+        )
     feedback: AIFeedback | None = None
     feedback_error: str | None = None
     try:
@@ -450,14 +515,15 @@ def analyze_process(
     return AnalysisResponse(
         thought_type_badge=(
             feedback.thought_type_badge if feedback else
-            "見直して伸びる自己修正タイプ" if metrics.revision_count else
-            "考えて進むチャレンジャータイプ"
+            "書き直して確かめた" if metrics.revision_count else
+            "自分の考えを形にした"
         ),
+        feedback_condition="process_praise",
         praise_points=[item.message for item in praise],
         praise_evidence=praise,
         encouragement_message=(
             feedback.encouragement_message if feedback else
-            "自分の手で考えを進めた過程が、次の自信につながっているよ。"
+            "自分の手で考えを進めた過程が残っているよ。次に何をするかは自分で選べるよ。"
         ),
         recognized_content=RecognizedContent(
             recognized_question=recognition.recognized_question or metadata["description"],
