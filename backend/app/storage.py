@@ -4,6 +4,7 @@ import csv
 import hashlib
 import json
 import sqlite3
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -36,7 +37,7 @@ class ResearchStore:
         return connection
 
     def initialize(self) -> None:
-        with self.connect() as connection:
+        with closing(self.connect()) as connection, connection:
             connection.executescript("""
                 PRAGMA journal_mode=WAL;
                 CREATE TABLE IF NOT EXISTS learner_profiles (
@@ -97,7 +98,7 @@ class ResearchStore:
 
     def append_event(self, event: StudyEventRequest) -> bool:
         payload = self._safe_payload(event.payload)
-        with self.connect() as connection:
+        with closing(self.connect()) as connection, connection:
             cursor = connection.execute(
                 """
                 INSERT OR IGNORE INTO study_events (
@@ -122,7 +123,7 @@ class ResearchStore:
             return cursor.rowcount > 0
 
     def get_profile(self, learner_id: str) -> tuple[LearnerState | None, int, str]:
-        with self.connect() as connection:
+        with closing(self.connect()) as connection, connection:
             row = connection.execute(
                 "SELECT state_json, sample_count, updated_at FROM learner_profiles WHERE learner_id = ?",
                 (self.hash_id(learner_id),),
@@ -134,7 +135,7 @@ class ResearchStore:
     def save_profile(self, learner_id: str, state: LearnerState) -> tuple[int, str]:
         learner_hash = self.hash_id(learner_id)
         updated_at = _now()
-        with self.connect() as connection:
+        with closing(self.connect()) as connection, connection:
             existing = connection.execute(
                 "SELECT sample_count FROM learner_profiles WHERE learner_id = ?",
                 (learner_hash,),
@@ -169,7 +170,7 @@ class ResearchStore:
         state: LearnerState,
         metrics: dict[str, Any],
     ) -> None:
-        with self.connect() as connection:
+        with closing(self.connect()) as connection, connection:
             connection.execute(
                 """
                 INSERT OR REPLACE INTO analysis_runs (
@@ -196,7 +197,7 @@ class ResearchStore:
 
     def get_dashboard_data(self, learner_id: str, history_limit: int = 40) -> dict[str, Any]:
         learner_hash = self.hash_id(learner_id)
-        with self.connect() as connection:
+        with closing(self.connect()) as connection, connection:
             rows = connection.execute(
                 """
                 SELECT session_hash, state_json, metrics_json, model_version, created_at
@@ -288,7 +289,7 @@ class ResearchStore:
         """Export derived data only. Outcomes are joined later by session/event ID."""
         destination = Path(destination)
         destination.parent.mkdir(parents=True, exist_ok=True)
-        with self.connect() as connection:
+        with closing(self.connect()) as connection, connection:
             rows = connection.execute("""
                 SELECT analysis_id, learner_hash, session_hash, status, latency_ms,
                        recognition_confidence, state_json, metrics_json,
@@ -328,7 +329,7 @@ class ResearchStore:
         """Export pseudonymous behavioral events for joining to an external survey."""
         destination = Path(destination)
         destination.parent.mkdir(parents=True, exist_ok=True)
-        with self.connect() as connection:
+        with closing(self.connect()) as connection, connection:
             rows = connection.execute("""
                 SELECT event_id, learner_hash, session_hash, problem_id, event_type,
                        occurred_at_ms, payload_json, intervention_probability,

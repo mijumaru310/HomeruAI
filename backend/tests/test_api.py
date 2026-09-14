@@ -127,6 +127,24 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.json()["accepted"])
 
+    def test_experiment_progress_events_are_accepted(self):
+        for index, event_type in enumerate((
+            "experiment_started", "first_stroke", "trial_skipped",
+            "feedback_displayed", "feedback_closed",
+            "experiment_optional_choice", "experiment_finished",
+        )):
+            response = self.client.post("/api/events", json={
+                "eventId": f"experiment-event-{index}",
+                "learnerId": "experiment-learner",
+                "sessionId": "experiment-session",
+                "problemId": "q_03",
+                "eventType": event_type,
+                "timestamp": 1_000 + index,
+                "payload": {"study_set": "easy", "trial": index + 1},
+            })
+            self.assertEqual(response.status_code, 200, event_type)
+            self.assertTrue(response.json()["accepted"])
+
     def test_dashboard_turns_analysis_process_into_monotonic_growth(self):
         learner_id = "dashboard-learner"
         analysis = self.client.post("/api/analyze", json={

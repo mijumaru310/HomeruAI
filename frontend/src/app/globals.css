@@ -640,6 +640,76 @@ html, body {
   user-select: none !important;
 }
 
+.experiment-status {
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 28px;
+  text-align: center;
+  color: #312e81;
+  background: linear-gradient(145deg, #faf5ff, #fff7ed);
+}
+.experiment-status h1 { margin: 0; font-size: clamp(24px, 4vw, 36px); }
+.experiment-status p { max-width: 580px; margin: 0; line-height: 1.7; }
+.experiment-complete svg { color: #16a34a; }
+.experiment-complete-note { color: #64748b; font-size: 13px; }
+.experiment-sync-alert { max-width: 620px; display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 18px; border: 1px solid #f59e0b; border-radius: 14px; background: #fffbeb; color: #92400e; }
+.experiment-sync-alert button { min-height: 44px; padding: 9px 16px; border: 0; border-radius: 10px; background: #92400e; color: #fff; font: inherit; font-weight: 700; cursor: pointer; }
+.experiment-header {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 10px max(18px, env(safe-area-inset-right)) 10px max(18px, env(safe-area-inset-left));
+  background: #fff;
+  border-bottom: 1px solid #ddd6fe;
+  box-shadow: 0 4px 18px rgba(76, 29, 149, .06);
+  z-index: 20;
+  flex-shrink: 0;
+}
+.experiment-heading { display: flex; flex-direction: column; min-width: 160px; gap: 3px; color: #312e81; }
+.experiment-heading strong { font-size: 20px; }
+.experiment-kicker { color: #6d28d9; font-size: 11px; font-weight: 800; letter-spacing: .06em; }
+.experiment-progress { display: flex; gap: 6px; margin-right: auto; }
+.experiment-progress span { width: 24px; height: 7px; border-radius: 999px; background: #e5e7eb; }
+.experiment-progress span.active { background: #8b5cf6; }
+.experiment-actions, .experiment-modal-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.experiment-actions button, .experiment-modal-actions button {
+  min-height: 44px;
+  padding: 9px 15px;
+  border: 1px solid #c4b5fd;
+  border-radius: 12px;
+  background: #fff;
+  color: #4c1d95;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 750;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.experiment-actions button.selected { background: #ede9fe; border-color: #7c3aed; }
+.experiment-actions button.primary, .experiment-modal-actions button.primary { background: #6d28d9; border-color: #6d28d9; color: #fff; }
+.experiment-actions button:disabled, .experiment-modal-actions button:disabled { opacity: .45; cursor: not-allowed; }
+.experiment-actions button:focus-visible, .experiment-modal-actions button:focus-visible { outline: 3px solid #f59e0b; outline-offset: 2px; }
+.experiment-guide { flex-shrink: 0; padding: 9px 22px; background: #faf5ff; color: #5b21b6; font-size: 13px; font-weight: 650; line-height: 1.5; }
+.experiment-app .canvas-header { padding: 11px 22px; }
+.experiment-problem-title { margin: 0; color: #1e293b; font-size: 20px; }
+.experiment-problem-subtitle { color: #64748b; font-size: 12px; }
+.experiment-modal-actions { justify-content: flex-end; }
+.experiment-save-error { margin: 0; color: #b91c1c; font-size: 13px; line-height: 1.5; }
+
+@media (max-width: 900px) {
+  .experiment-header { align-items: flex-start; flex-wrap: wrap; gap: 8px 12px; }
+  .experiment-heading { min-width: 0; }
+  .experiment-progress { align-self: center; }
+  .experiment-actions { width: 100%; }
+  .experiment-actions button { flex: 1 1 auto; }
+  .experiment-actions button.primary { flex-grow: 2; }
+  .experiment-guide { padding: 8px 14px; }
+}
+
 /* 学習意欲を支える常設ステータス */
 .study-dialog {
   position: fixed;

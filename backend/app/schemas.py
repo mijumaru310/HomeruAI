@@ -219,6 +219,8 @@ class StudyEventRequest(BaseModel):
         "session_started", "analysis_completed", "intervention_offered",
         "intervention_dismissed", "hint_opened", "writing_resumed",
         "next_problem_started", "session_completed", "feedback_rating",
+        "experiment_started", "experiment_optional_choice", "experiment_finished",
+        "first_stroke", "trial_skipped", "feedback_displayed", "feedback_closed",
     ]
     timestamp: int = Field(ge=0)
     payload: dict[str, Any] = Field(default_factory=dict)

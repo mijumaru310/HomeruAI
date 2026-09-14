@@ -178,7 +178,7 @@ interface Stroke {
 
 ### POST `/api/analyze`
 
-必須: `questionId`、1件以上の `strokes`、Ghost `image`。任意で `questionText`、`sourceImage`、`sourceType`、`analysisBounds`、`learnerId`、`sessionId`、`problemDifficulty`、`hintCount`、`feedbackCondition` を受け取る。`feedbackCondition=neutral_summary` は研究比較用で、称賛・赤ペン・途中介入を行わず操作量だけを表示する。
+必須: `questionId`、1件以上の `strokes`、Ghost `image`。任意で `questionText`、`sourceImage`、`sourceType`、`analysisBounds`、`learnerId`、`sessionId`、`problemDifficulty`、`hintCount`、`feedbackCondition` を受け取る。`feedbackCondition=neutral_summary` は研究比較用で、称賛・赤ペン・途中介入を行わず観測事実を評価語なしで要約する。
 
 応答には `praise_points`、`praise_evidence`、`recognized_content`、`recognition_confidence`、`process_metrics`、`process_evidence`、`learner_state`、`intervention`、`source`、`provider_error_category`、`notice` を含む。
 
@@ -220,9 +220,9 @@ Gemini 呼び出しにはタイムアウトを設定する。主モデルの一�
 
 ## 10. 研究データとプライバシー
 
-ブラウザの学習者 ID とセッション ID はランダム生成し、サーバーではさらに SHA-256 の短縮ハッシュへ変換する。SQLite には派生特徴、学習状態、介入、反応、処理時間を保存する。
+通常利用ではブラウザの学習者 ID とセッション ID をランダム生成する。実験では参加者コードから `study_CODE` を学習者 ID にし、コード単位でデータを照合できるようにする。サーバーではこれらを SHA-256 の短縮ハッシュへ変換する。SQLite には派生特徴、学習状態、介入、反応、処理時間を保存する。
 
-サーバー研究ストアには問題画像、Ghost画像、生のストローク点列、APIキーやトークンを保存しない。実験開始前に同意文、撤回・削除手順、保存期間、研究責任者、倫理審査要否を別途定めること。現実の児童生徒を対象にする場合、擬似匿名化だけで匿名化済みとは扱わない。
+サーバー研究ストアには問題画像、Ghost画像、生のストローク点列、APIキーやトークンを保存しない。一方、端末内の IndexedDB には生の筆跡を含むノートが残り、Gemini利用時には解答画像が外部APIへ送られる。実験開始前に同意文、撤回・削除手順、保存期間、研究責任者、倫理審査要否を別途定めること。現実の児童生徒を対象にする場合、擬似匿名化だけで匿名化済みとは扱わない。
 
 ## 11. 再学習設計
 
@@ -298,8 +298,13 @@ backend\venv\Scripts\python.exe backend\scripts\train_support_model.py
 - X1〜X4 状態推定、段階的ヒント、リアルタイム介入
 - IndexedDB 自動保存、擬似匿名イベント、SQLite保存、CSV出力、任意再学習
 - 成人向けの難度別デモ7問と、外部アンケート用のプロセス称賛／中立フィードバック比較条件
+- URLで外部切り替えする実験モード（固定3問＋固定の任意追加1問、参加者別進捗保存、自由操作の制限、完了画面）
+- 実験の初筆記時間・無筆記スキップ・フィードバック提示の記録、未送信ログの端末内キューと再送、完了時の送信状態表示
+- セット内で条件を均衡させる割付CSV、参加者別イベント監査CSV、端末とサーバーの参加者別撤回処理
 
 成人予備実験の対象、先行研究、外部アンケート項目、A/B実施URL、分析計画、研究上の限界は [`RESEARCH_PROTOCOL.md`](./RESEARCH_PROTOCOL.md) を参照する。アンケートや同意フォームはアプリ内に実装せず、研究責任者情報と撤回方法を含む外部フォームで実施する。
+
+研究用のプロトコル版は `adult-pilot-v1.1`。実験イベントのペイロードと割付CSVに保存する。`backend/scripts/create_experiment_assignments.py` で割付、`backend/scripts/audit_experiment.py` で欠損・条件不一致・分析元を監査する。端末の撤回は同じブラウザで `/research/cleanup`、サーバーの撤回は `backend/scripts/withdraw_participant.py` を使う。CSV出力・バックアップ・外部アンケートは別途消去が必要。
 
 研究前に追加検討する項目:
 

@@ -13,6 +13,11 @@ export interface StoredWorkspace<TSections> {
   selectedModel?: "gemini"; // 古い保存データとの互換用。分析経路はGeminiのみ。
   praiseMode: "super_praise" | "support" | "challenge";
   pageTransforms: Record<string, { pan: { x: number; y: number }; zoom: number }>;
+  experimentProgress?: {
+    step: number;
+    finished: boolean;
+    optionalChosen: boolean | null;
+  };
 }
 
 const openDatabase = (): Promise<IDBDatabase> =>
@@ -56,6 +61,22 @@ export async function saveWorkspace<TSections>(workspace: StoredWorkspace<TSecti
       transaction.oncomplete = () => resolve();
       transaction.onerror = () => reject(transaction.error ?? new Error("ノートを保存できませんでした。"));
       transaction.onabort = () => reject(transaction.error ?? new Error("ノートの保存が中断されました。"));
+    });
+  } finally {
+    database.close();
+  }
+}
+
+export async function deleteWorkspace(workspaceKey: string): Promise<void> {
+  if (typeof indexedDB === "undefined") throw new Error("このブラウザでは保存領域を削除できません。");
+  const database = await openDatabase();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const transaction = database.transaction(STORE_NAME, "readwrite");
+      transaction.objectStore(STORE_NAME).delete(workspaceKey);
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error ?? new Error("ノートを削除できませんでした。"));
+      transaction.onabort = () => reject(transaction.error ?? new Error("ノートの削除が中断されました。"));
     });
   } finally {
     database.close();

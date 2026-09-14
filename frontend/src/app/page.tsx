@@ -20,7 +20,8 @@ import { generateGhostRender } from "../utils/ghostRenderer";
 import { loadWorkspace, saveWorkspace } from "../utils/notebookStorage";
 import { undoLastStrokeAction } from "../utils/strokeHistory";
 import { renderPdfPages } from "../utils/pdfImporter";
-import { createId, getOrCreateLearnerId, recordStudyEvent, requestLearnerDashboard, requestPauseAssist } from "../utils/adaptiveLearning";
+import { createId, flushPendingStudyEvents, getOrCreateLearnerId, pendingStudyEventCount, recordStudyEvent, requestLearnerDashboard, requestPauseAssist } from "../utils/adaptiveLearning";
+import { experimentProblemIds, experimentWorkspaceKey, parseExperimentRoute, type ExperimentRoute } from "../utils/experimentMode";
 
 export const PRESET_QUESTIONS = [
   { id: "custom", label: "📝 白紙ノート（自由に解く）", title: "自由ノート", text: "", difficulty: undefined },
@@ -64,6 +65,9 @@ interface PageData {
   feedbackCondition?: "process_praise" | "neutral_summary";
   problemRegion?: NormalizedRegion;
   rawAiResponse?: unknown;
+  trialStartedAt?: number;
+  firstStrokeLatencyMs?: number;
+  skippedAt?: number;
 }
 
 
@@ -95,8 +99,32 @@ function getStudyFeedbackCondition(): "process_praise" | "neutral_summary" {
     : "process_praise";
 }
 
+function createExperimentPage(problemId: string, step: number): PageData {
+  const problem = PRESET_QUESTIONS.find(item => item.id === problemId);
+  if (!problem?.text) throw new Error(`Unknown experiment problem: ${problemId}`);
+  return {
+    id: `experiment_page_${step}`,
+    title: problem.title,
+    date: new Date().toLocaleString("ja-JP"),
+    questionText: problem.text,
+    strokes: [], images: [],
+    texts: [{
+      id: `txt_preset_experiment_${step}`, text: problem.text,
+      x: 52, y: 40, fontSize: 22, color: "#1e293b",
+      fontWeight: "bold", fontStyle: "normal", textDecoration: "none",
+    }],
+    bgFileName: null,
+    aiAnnotations: [],
+    sourceType: "preset",
+    hintCount: 0,
+    trialStartedAt: Date.now(),
+  };
+}
+
 function getWorkspaceKey(): string {
   if (typeof window === "undefined") return "current";
+  const route = parseExperimentRoute(window.location.search);
+  if (route.kind === "experiment") return experimentWorkspaceKey(route.config);
   const participantCode = new URLSearchParams(window.location.search).get("participant")?.trim();
   return participantCode && /^[A-Za-z0-9_-]{3,32}$/.test(participantCode)
     ? `study_workspace_${participantCode}`
@@ -439,6 +467,21 @@ const Sidebar = React.memo(({ sections, activeSectionId, activePageId, handleSec
 Sidebar.displayName = "Sidebar";
 
 export default function Home() {
+  const [experimentRoute, setExperimentRoute] = useState<ExperimentRoute | null>(null);
+  const [experimentStep, setExperimentStep] = useState(0);
+  const [experimentFinished, setExperimentFinished] = useState(false);
+  const [optionalChosen, setOptionalChosen] = useState<boolean | null>(null);
+  const [isTransitioning, setIsTransitioning] = useState(false);
+  const [pendingEventCount, setPendingEventCount] = useState(-2);
+  const [eventSyncError, setEventSyncError] = useState(false);
+  const experimentConfig = experimentRoute?.kind === "experiment" ? experimentRoute.config : null;
+  const isExperiment = experimentConfig !== null;
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => setExperimentRoute(parseExperimentRoute(window.location.search)));
+    return () => window.cancelAnimationFrame(frame);
+  }, []);
+
   const [sections, setSections] = useState<SectionData[]>([
     {
       id: "sec_quick", title: "クイック ノート",
@@ -487,6 +530,7 @@ export default function Home() {
 
   const activeSection = sections.find(s => s.id === activeSectionId) || sections[0];
   const activePage = activeSection.pages.find(p => p.id === activePageId) || activeSection.pages[0];
+  const experimentLocked = isExperiment && (experimentFinished || Boolean(activePage.thoughtTypeBadge) || Boolean(activePage.skippedAt));
 
   const [pageTransforms, setPageTransforms] = useState<Record<string, { pan: { x: number; y: number }; zoom: number }>>({});
 
@@ -516,6 +560,9 @@ export default function Home() {
   
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const persistenceReadyRef = useRef(false);
+  const autosaveGenerationRef = useRef(0);
+  const experimentTransitionRef = useRef(false);
+  const firstStrokeLoggedRef = useRef<Set<string>>(new Set());
   const learnerIdRef = useRef("anonymous");
   const sessionIdRef = useRef("session_pending");
   const lastAssistedStrokeRef = useRef<number | null>(null);
@@ -552,10 +599,89 @@ export default function Home() {
 
   useEffect(() => {
     let cancelled = false;
+    const sync = () => {
+      setPendingEventCount(pendingStudyEventCount());
+      void flushPendingStudyEvents().then(count => {
+        if (!cancelled) setPendingEventCount(count);
+      });
+    };
+    const onVisibility = () => { if (document.visibilityState === "visible") sync(); };
+    sync();
+    const timer = window.setInterval(sync, 8_000);
+    window.addEventListener("online", sync);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      window.removeEventListener("online", sync);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!experimentRoute || experimentRoute.kind === "invalid") return;
+    let cancelled = false;
+
+    const startExperiment = () => {
+      if (experimentRoute.kind !== "experiment") return;
+      const firstProblemId = experimentProblemIds(experimentRoute.config)[0];
+      setSections([{ id: "sec_experiment", title: "実験", pages: [createExperimentPage(firstProblemId, 0)] }]);
+      setActiveSectionId("sec_experiment");
+      setActivePageId("experiment_page_0");
+      setSelectedPreset(firstProblemId);
+      setPraiseMode("support");
+      setExperimentStep(0);
+      setExperimentFinished(false);
+      setOptionalChosen(null);
+      setPageTransforms({});
+      recordStudyEvent({
+        learnerId: learnerIdRef.current,
+        sessionId: sessionIdRef.current,
+        problemId: firstProblemId,
+        eventType: "experiment_started",
+        data: {
+          study_set: experimentRoute.config.setId,
+          feedback_condition: experimentRoute.config.feedbackCondition,
+          trial: 1,
+        },
+      });
+    };
 
     void loadWorkspace<SectionData[]>(getWorkspaceKey())
       .then((stored) => {
-        if (cancelled || !stored || stored.schemaVersion !== 1 || !Array.isArray(stored.sections) || stored.sections.length === 0) return;
+        if (cancelled) return;
+        if (!stored) {
+          startExperiment();
+          return;
+        }
+        if (stored.schemaVersion !== 1 || !Array.isArray(stored.sections) || stored.sections.length === 0) {
+          if (experimentRoute.kind === "experiment") setSaveStatus("error");
+          return;
+        }
+
+        if (experimentRoute.kind === "experiment") {
+          const progress = stored.experimentProgress;
+          const planned = experimentProblemIds(experimentRoute.config);
+          const step = progress?.step ?? -1;
+          const section = stored.sections.find(item => item.id === "sec_experiment");
+          const page = Number.isInteger(step) && step >= 0 && step < planned.length
+            ? section?.pages.find(item => item.id === `experiment_page_${step}` && item.questionText === PRESET_QUESTIONS.find(problem => problem.id === planned[step])?.text)
+            : undefined;
+          if (!progress || !section || !page) {
+            setSaveStatus("error");
+            return;
+          }
+          setSections([section]);
+          setActiveSectionId("sec_experiment");
+          setActivePageId(page.id);
+          setSelectedPreset(planned[step]);
+          setPraiseMode("support");
+          setExperimentStep(step);
+          setExperimentFinished(progress.finished);
+          setOptionalChosen(progress.optionalChosen);
+          setPageTransforms(stored.pageTransforms ?? {});
+          return;
+        }
 
         const validSections = stored.sections.filter(section =>
           section && typeof section.id === "string" && Array.isArray(section.pages) && section.pages.length > 0
@@ -583,13 +709,15 @@ export default function Home() {
       });
 
     return () => { cancelled = true; };
-  }, []);
+  }, [experimentRoute]);
 
   useEffect(() => {
     if (!persistenceReadyRef.current) return;
 
+    const generation = ++autosaveGenerationRef.current;
     setSaveStatus("saving");
     const timer = window.setTimeout(() => {
+      if (generation !== autosaveGenerationRef.current || experimentTransitionRef.current) return;
       void saveWorkspace<SectionData[]>({
         schemaVersion: 1,
         savedAt: new Date().toISOString(),
@@ -599,6 +727,11 @@ export default function Home() {
         selectedPreset,
         praiseMode,
         pageTransforms,
+        experimentProgress: isExperiment ? {
+          step: experimentStep,
+          finished: experimentFinished,
+          optionalChosen,
+        } : undefined,
       }, getWorkspaceKey())
         .then(() => setSaveStatus("saved"))
         .catch((error) => {
@@ -608,10 +741,11 @@ export default function Home() {
     }, 500);
 
     return () => window.clearTimeout(timer);
-  }, [sections, activeSectionId, activePageId, selectedPreset, praiseMode, pageTransforms]);
+  }, [sections, activeSectionId, activePageId, selectedPreset, praiseMode, pageTransforms, isExperiment, experimentStep, experimentFinished, optionalChosen]);
 
 
   const handleSectionSwitch = useCallback((newSectionId: string) => {
+    if (isExperiment) return;
     setActiveAssistance(null);
     setRevealedHint(null);
     lastAssistedStrokeRef.current = null;
@@ -620,9 +754,10 @@ export default function Home() {
     if (targetSection && targetSection.pages.length > 0) {
       setActivePageId(targetSection.pages[0].id);
     }
-  }, [sections]);
+  }, [sections, isExperiment]);
 
   const handlePageSwitch = useCallback((newPageId: string) => {
+    if (isExperiment) return;
     setActiveAssistance(null);
     setRevealedHint(null);
     lastAssistedStrokeRef.current = null;
@@ -633,7 +768,7 @@ export default function Home() {
       eventType: "next_problem_started",
     });
     setActivePageId(newPageId);
-  }, []);
+  }, [isExperiment]);
 
   const updateActivePage = useCallback((updater: (page: PageData) => PageData) => {
     setSections(prev => prev.map(s => s.id !== activeSectionId ? s : {
@@ -642,20 +777,57 @@ export default function Home() {
   }, [activeSectionId, activePageId]);
 
   const setStrokesForActivePage = useCallback((update: React.SetStateAction<Stroke[]>) => {
+    if (experimentLocked) return;
     updateActivePage(p => ({ ...p, strokes: typeof update === "function" ? update(p.strokes) : update }));
-  }, [updateActivePage]);
+  }, [updateActivePage, experimentLocked]);
 
   const setImagesForActivePage = useCallback((update: React.SetStateAction<CanvasImage[]>) => {
+    if (isExperiment) return;
     updateActivePage(p => ({ ...p, images: typeof update === "function" ? update(p.images) : update }));
-  }, [updateActivePage]);
+  }, [updateActivePage, isExperiment]);
 
   const setTextsForActivePage = useCallback((update: React.SetStateAction<CanvasText[]>) => {
+    if (isExperiment) return;
     updateActivePage(p => ({ ...p, texts: typeof update === "function" ? update(p.texts) : update }));
-  }, [updateActivePage]);
+  }, [updateActivePage, isExperiment]);
+
+  useEffect(() => {
+    if (!isExperiment || !experimentConfig || !activePage.trialStartedAt || activePage.firstStrokeLatencyMs !== undefined || activePage.skippedAt) return;
+    const firstDraw = activePage.strokes.find(stroke => stroke.type === "draw");
+    if (!firstDraw || firstStrokeLoggedRef.current.has(activePage.id)) return;
+    firstStrokeLoggedRef.current.add(activePage.id);
+    const latencyMs = Math.max(0, firstDraw.startTime - activePage.trialStartedAt);
+    updateActivePage(page => ({ ...page, firstStrokeLatencyMs: latencyMs }));
+    void recordStudyEvent({
+      learnerId: learnerIdRef.current,
+      sessionId: sessionIdRef.current,
+      problemId: selectedPreset,
+      eventType: "first_stroke",
+      data: { study_set: experimentConfig.setId, trial: experimentStep + 1, latency_ms: latencyMs },
+    });
+  }, [isExperiment, experimentConfig, activePage, selectedPreset, experimentStep, updateActivePage]);
+
+  useEffect(() => {
+    if (!isExperiment || !experimentConfig || !showPraiseModal || !activePage.thoughtTypeBadge) return;
+    const openedAt = Date.now();
+    void recordStudyEvent({
+      learnerId: learnerIdRef.current, sessionId: sessionIdRef.current,
+      problemId: selectedPreset, eventType: "feedback_displayed",
+      data: { study_set: experimentConfig.setId, trial: experimentStep + 1, source: activePage.analysisSource, feedback_condition: experimentConfig.feedbackCondition },
+    });
+    return () => {
+      void recordStudyEvent({
+        learnerId: learnerIdRef.current, sessionId: sessionIdRef.current,
+        problemId: selectedPreset, eventType: "feedback_closed",
+        data: { study_set: experimentConfig.setId, trial: experimentStep + 1, visible_ms: Math.max(0, Date.now() - openedAt) },
+      });
+    };
+  }, [isExperiment, experimentConfig, showPraiseModal, activePage.id, activePage.thoughtTypeBadge, activePage.analysisSource, selectedPreset, experimentStep]);
 
   useEffect(() => {
     let cancelled = false;
     const evaluatePause = async () => {
+      if (isExperiment) return;
       if (getStudyFeedbackCondition() === "neutral_summary") return;
       const draws = activePage.strokes.filter(stroke => stroke.type === "draw");
       if (draws.length === 0 || isAnalyzing || isReplaying) return;
@@ -721,7 +893,7 @@ export default function Home() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [activePage, activeAssistance, isAnalyzing, isReplaying, selectedPreset, updateActivePage]);
+  }, [activePage, activeAssistance, isAnalyzing, isReplaying, selectedPreset, updateActivePage, isExperiment]);
 
   const dismissAssistance = useCallback(() => {
     if (activeAssistance) {
@@ -759,6 +931,7 @@ export default function Home() {
   }, [activePageId]);
 
   const handleClear = useCallback(() => {
+    if (isExperiment) return;
     if (window.confirm("このページの内容をすべて消去しますか？")) {
       updateActivePage(p => ({
         ...p,
@@ -770,13 +943,14 @@ export default function Home() {
       setReplayedStrokes([]); setIsReplaying(false);
       setActiveAssistance(null); setRevealedHint(null); lastAssistedStrokeRef.current = null;
     }
-  }, [updateActivePage]);
+  }, [updateActivePage, isExperiment]);
 
   const handleUndo = useCallback(() => {
     setStrokesForActivePage(previous => undoLastStrokeAction(previous));
   }, [setStrokesForActivePage]);
 
   const handleFileUpload = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    if (isExperiment) return;
     const files = Array.from(e.target.files ?? []);
     if (fileInputRef.current) fileInputRef.current.value = "";
     if (files.length === 0) return;
@@ -865,7 +1039,7 @@ export default function Home() {
     })().catch((error) => {
       setAnalysisError(error instanceof Error ? error.message : "ファイルを読み込めませんでした。");
     });
-  }, [activeSectionId, updateActivePage]);
+  }, [activeSectionId, updateActivePage, isExperiment]);
 
   const exportCanvasWithWhiteBackground = (mimeType: string, quality: number = 1.0) => {
     const canvas = document.getElementById("homeruai-canvas") as HTMLCanvasElement;
@@ -920,6 +1094,7 @@ export default function Home() {
   }, [activePage.title]);
 
   const handleSelectPreset = useCallback((presetId: string) => {
+    if (isExperiment) return;
     if (presetId === "input_custom") {
       setSelectedPreset(presetId);
       setCustomProblemTitle(activePage.title || "任意の問題");
@@ -991,9 +1166,10 @@ export default function Home() {
     });
     setReplayedStrokes([]);
     setIsReplaying(false);
-  }, [activePage.title, activePage.questionText, activePage.strokes, selectedPreset, updateActivePage]);
+  }, [activePage.title, activePage.questionText, activePage.strokes, selectedPreset, updateActivePage, isExperiment]);
 
   const handleApplyCustomProblem = useCallback(() => {
+    if (isExperiment) return;
     const finalTitle = customProblemTitle.trim() || "任意の問題";
     const finalQuestion = customProblemText.trim();
 
@@ -1043,9 +1219,10 @@ export default function Home() {
     setShowCustomProblemModal(false);
     setReplayedStrokes([]);
     setIsReplaying(false);
-  }, [customProblemTitle, customProblemText, placeCustomTextOnCanvas, updateActivePage]);
+  }, [customProblemTitle, customProblemText, placeCustomTextOnCanvas, updateActivePage, isExperiment]);
 
   const handleAnalyze = useCallback(async () => {
+    if (isAnalyzing || experimentLocked || (isExperiment && saveStatus === "loading")) return;
     if (activePage.strokes.length === 0) {
       alert("分析する手書きプロセスがありません。キャンバスに記述してください。");
       return;
@@ -1084,7 +1261,7 @@ export default function Home() {
 
       const targetQuestionId = selectedPreset !== "custom" ? selectedPreset : (activePage.title || "custom");
       const presetDifficulty = PRESET_QUESTIONS.find(question => question.id === selectedPreset)?.difficulty;
-      const currentFeedbackCondition = getStudyFeedbackCondition();
+      const currentFeedbackCondition = experimentConfig?.feedbackCondition ?? getStudyFeedbackCondition();
 
       const payload = {
         questionId: targetQuestionId,
@@ -1244,6 +1421,7 @@ export default function Home() {
           recognition_confidence: result.recognition_confidence,
           intervention_action: result.intervention?.action,
           feedback_condition: result.feedback_condition ?? currentFeedbackCondition,
+          ...(experimentConfig ? { study_set: experimentConfig.setId, trial: experimentStep + 1 } : {}),
         },
       });
 
@@ -1259,10 +1437,11 @@ export default function Home() {
     } finally {
       setIsAnalyzing(false);
     }
-  }, [activePage, selectedPreset, praiseMode, refreshDashboard, updateActivePage]);
+  }, [activePage, selectedPreset, praiseMode, refreshDashboard, updateActivePage, isAnalyzing, experimentLocked, isExperiment, saveStatus, experimentConfig, experimentStep]);
 
 
   const handleAddSection = useCallback(() => {
+    if (isExperiment) return;
     const title = prompt("新しいセクションの名前を入力:", "新規セクション");
     if (!title) return;
     const newId = `sec_${Date.now()}`; const newPageId = `page_${Date.now()}`;
@@ -1270,19 +1449,195 @@ export default function Home() {
       id: newId, title, pages: [{ id: newPageId, title: "", date: new Date().toLocaleString(), strokes: [], images: [], texts: [], bgFileName: null, aiAnnotations: [], sourceType: "blank", hintCount: 0 }]
     }]);
     setActiveSectionId(newId); setActivePageId(newPageId);
-  }, []);
+  }, [isExperiment]);
 
   const handleAddPage = useCallback(() => {
+    if (isExperiment) return;
     const newPageId = `page_${Date.now()}`;
     setSections(prev => prev.map(s => s.id !== activeSectionId ? s : {
       ...s, pages: [...s.pages, { id: newPageId, title: "", date: new Date().toLocaleString(), strokes: [], images: [], texts: [], bgFileName: null, aiAnnotations: [], sourceType: "blank", hintCount: 0 }]
     }));
     setActivePageId(newPageId);
-  }, [activeSectionId]);
+  }, [activeSectionId, isExperiment]);
+
+  const persistExperimentProgress = useCallback(async (
+    nextSections: SectionData[], nextStep: number, finished: boolean,
+    nextOptionalChosen: boolean | null, problemId: string,
+  ): Promise<boolean> => {
+    if (!experimentConfig || experimentTransitionRef.current) return false;
+    experimentTransitionRef.current = true;
+    autosaveGenerationRef.current += 1;
+    setIsTransitioning(true);
+    setSaveStatus("saving");
+    try {
+      await saveWorkspace<SectionData[]>({
+        schemaVersion: 1,
+        savedAt: new Date().toISOString(),
+        sections: nextSections,
+        activeSectionId: "sec_experiment",
+        activePageId: `experiment_page_${nextStep}`,
+        selectedPreset: problemId,
+        praiseMode: "support",
+        pageTransforms,
+        experimentProgress: { step: nextStep, finished, optionalChosen: nextOptionalChosen },
+      }, experimentWorkspaceKey(experimentConfig));
+      setSaveStatus("saved");
+      return true;
+    } catch (error) {
+      console.warn("Experiment progress could not be saved.", error);
+      setSaveStatus("error");
+      setAnalysisError("進行状況を保存できませんでした。端末の空き容量やブラウザ設定を確認して、もう一度お試しください。");
+      return false;
+    } finally {
+      experimentTransitionRef.current = false;
+      setIsTransitioning(false);
+    }
+  }, [experimentConfig, pageTransforms]);
+
+  const skipExperimentTrial = useCallback(async () => {
+    if (!experimentConfig || experimentLocked || isAnalyzing || experimentTransitionRef.current) return;
+    const now = Date.now();
+    const nextSections = sections.map(section => section.id !== "sec_experiment" ? section : {
+      ...section,
+      pages: section.pages.map(page => page.id !== activePageId ? page : { ...page, skippedAt: now }),
+    });
+    if (!await persistExperimentProgress(nextSections, experimentStep, false, optionalChosen, selectedPreset)) return;
+    setSections(nextSections);
+    void recordStudyEvent({
+      learnerId: learnerIdRef.current, sessionId: sessionIdRef.current,
+      problemId: selectedPreset, eventType: "trial_skipped",
+      data: {
+        study_set: experimentConfig.setId, trial: experimentStep + 1,
+        elapsed_ms: Math.max(0, now - (activePage.trialStartedAt ?? now)),
+        stroke_count: activePage.strokes.length,
+      },
+    }).then(() => setPendingEventCount(pendingStudyEventCount()));
+    setPendingEventCount(pendingStudyEventCount());
+  }, [experimentConfig, experimentLocked, isAnalyzing, sections, activePageId, persistExperimentProgress, experimentStep, optionalChosen, selectedPreset, activePage.trialStartedAt, activePage.strokes.length]);
+
+  const trackStudyEventDelivery = useCallback((delivery: Promise<boolean>) => {
+    setPendingEventCount(pendingStudyEventCount());
+    void delivery.then(confirmed => {
+      const pending = pendingStudyEventCount();
+      setPendingEventCount(pending);
+      if (!confirmed && pending <= 0) setEventSyncError(true);
+    });
+  }, []);
+
+  const advanceExperiment = useCallback(async (allowOptional = false): Promise<boolean> => {
+    if (!experimentConfig || (!activePage.thoughtTypeBadge && !activePage.skippedAt) || experimentStep >= 3 || isAnalyzing || experimentTransitionRef.current) return false;
+    const nextStep = experimentStep + 1;
+    if (nextStep === 3 && optionalChosen !== true && !allowOptional) return false;
+    const problemId = experimentProblemIds(experimentConfig)[nextStep];
+    if (!problemId) return false;
+    const nextSections = sections.map(section => section.id !== "sec_experiment" ? section : {
+      ...section,
+      pages: [...section.pages.filter(page => page.id !== `experiment_page_${nextStep}`), createExperimentPage(problemId, nextStep)],
+    });
+    if (!await persistExperimentProgress(nextSections, nextStep, false, nextStep === 3 ? true : optionalChosen, problemId)) return false;
+    setSections(nextSections);
+    setActivePageId(`experiment_page_${nextStep}`);
+    setSelectedPreset(problemId);
+    setExperimentStep(nextStep);
+    if (nextStep === 3) setOptionalChosen(true);
+    setTool("pen");
+    setShowPraiseModal(false);
+    setAnalysisError(null);
+    setActiveAssistance(null);
+    setRevealedHint(null);
+    recordStudyEvent({
+      learnerId: learnerIdRef.current,
+      sessionId: sessionIdRef.current,
+      problemId,
+      eventType: "next_problem_started",
+      data: { study_set: experimentConfig.setId, trial: nextStep + 1, feedback_condition: experimentConfig.feedbackCondition },
+    });
+    return true;
+  }, [experimentConfig, activePage.thoughtTypeBadge, activePage.skippedAt, experimentStep, isAnalyzing, optionalChosen, sections, persistExperimentProgress]);
+
+  const finishExperiment = useCallback(async (choseOptional: boolean) => {
+    if (!experimentConfig || (!activePage.thoughtTypeBadge && !activePage.skippedAt) || isAnalyzing || experimentTransitionRef.current) return;
+    if (experimentStep === 2) {
+      if (choseOptional && !await advanceExperiment(true)) return;
+      if (!choseOptional && !await persistExperimentProgress(sections, experimentStep, true, false, selectedPreset)) return;
+      setOptionalChosen(choseOptional);
+      trackStudyEventDelivery(recordStudyEvent({
+        learnerId: learnerIdRef.current,
+        sessionId: sessionIdRef.current,
+        problemId: selectedPreset,
+        eventType: "experiment_optional_choice",
+        data: { study_set: experimentConfig.setId, chose_optional: choseOptional, feedback_condition: experimentConfig.feedbackCondition },
+      }));
+      if (choseOptional) return;
+    } else if (experimentStep === 3) {
+      if (!await persistExperimentProgress(sections, experimentStep, true, true, selectedPreset)) return;
+    } else return;
+    setExperimentFinished(true);
+    setShowPraiseModal(false);
+    trackStudyEventDelivery(recordStudyEvent({
+      learnerId: learnerIdRef.current,
+      sessionId: sessionIdRef.current,
+      problemId: selectedPreset,
+      eventType: "experiment_finished",
+      data: { study_set: experimentConfig.setId, completed_trials: experimentStep + 1, chose_optional: choseOptional || optionalChosen === true, feedback_condition: experimentConfig.feedbackCondition },
+    }));
+    trackStudyEventDelivery(recordStudyEvent({
+      learnerId: learnerIdRef.current,
+      sessionId: sessionIdRef.current,
+      eventType: "session_completed",
+      data: { experiment: true, study_set: experimentConfig.setId, completed_trials: experimentStep + 1 },
+    }));
+  }, [experimentConfig, activePage.thoughtTypeBadge, activePage.skippedAt, isAnalyzing, experimentStep, selectedPreset, optionalChosen, advanceExperiment, persistExperimentProgress, sections, trackStudyEventDelivery]);
+
+  if (!experimentRoute) {
+    return <main className="experiment-status" aria-live="polite"><Loader2 className="animate-spin" size={28} />準備しています…</main>;
+  }
+  if (experimentRoute.kind === "invalid") {
+    return <main className="experiment-status"><h1>実験用URLを確認してください</h1><p>{experimentRoute.reason}</p><p>研究者から配布されたURLを開いてください。</p></main>;
+  }
+  if (saveStatus === "loading") {
+    return <main className="experiment-status" aria-live="polite"><Loader2 className="animate-spin" size={28} />ノートを読み込んでいます…</main>;
+  }
+  if (isExperiment && activeSectionId !== "sec_experiment") {
+    return <main className="experiment-status"><h1>実験を開始できませんでした</h1><p>この端末の保存データを読み込めません。研究者にお知らせください。保存データは自動で消去していません。</p></main>;
+  }
+  if (isExperiment && experimentFinished) {
+    return <main className="experiment-status experiment-complete"><CheckCircle2 size={44} /><h1>体験はここまでです</h1>
+      {pendingEventCount === -2 ? <p role="status">研究記録を確認しています…</p>
+        : pendingEventCount === 0 && !eventSyncError
+          ? <p role="status">この端末に未送信の記録はありません。研究者の案内に沿って、外部アンケートへ進んでください。</p>
+          : <div className="experiment-sync-alert" role="alert"><p>{pendingEventCount < 0 || eventSyncError ? "記録を保存・送信できませんでした。" : `記録を送信中です（未送信 ${pendingEventCount} 件）。`}この端末を閉じる前に研究者へお知らせください。</p><button type="button" onClick={() => { void flushPendingStudyEvents().then(setPendingEventCount); }}>送信を再試行</button></div>}
+      <p className="experiment-complete-note">アンケートはこのアプリ内にはありません。進行状況はこの端末にも保存されます。</p></main>;
+  }
 
   return (
-    <main className="onenote-app">
-      <RibbonHeader
+    <main className={`onenote-app ${isExperiment ? "experiment-app" : ""}`}>
+      {isExperiment ? (
+        <header className="experiment-header">
+          <div className="experiment-heading"><span className="experiment-kicker">HomeruAI 調査体験</span><strong>{experimentStep < 3 ? `問題 ${experimentStep + 1} / 3` : "追加の問題"}</strong></div>
+          <div className="experiment-progress" aria-label={`現在の問題 ${experimentStep + 1}`}>
+            {[0, 1, 2].map(index => <span key={index} className={index <= experimentStep ? "active" : ""} />)}
+          </div>
+          <div className="experiment-actions" role="toolbar" aria-label="ノートの操作">
+            {!experimentLocked && <>
+              <button type="button" className={tool === "pen" ? "selected" : ""} onClick={() => setTool("pen")} aria-pressed={tool === "pen"}>ペン</button>
+              <button type="button" className={tool === "eraser" ? "selected" : ""} onClick={() => setTool("eraser")} aria-pressed={tool === "eraser"}>消しゴム</button>
+              <button type="button" onClick={handleUndo} disabled={activePage.strokes.length === 0}>1つ戻す</button>
+              <button type="button" className="primary" onClick={handleAnalyze} disabled={isAnalyzing || activePage.strokes.length === 0}>{isAnalyzing ? "分析中…" : "振り返る"}</button>
+              <button type="button" onClick={() => { void skipExperimentTrial(); }} disabled={isAnalyzing || isTransitioning}>書けないまま次へ</button>
+            </>}
+            {experimentLocked && <>
+              {activePage.thoughtTypeBadge && <button type="button" onClick={() => setShowPraiseModal(true)} disabled={isTransitioning}>振り返りを見る</button>}
+              {experimentStep < 2 && <button type="button" className="primary" onClick={() => { void advanceExperiment(); }} disabled={isTransitioning}>{isTransitioning ? "保存中…" : "次の問題へ"}</button>}
+              {experimentStep === 2 && <>
+                <button type="button" onClick={() => { void finishExperiment(false); }} disabled={isTransitioning}>ここで終了</button>
+                <button type="button" className="primary" onClick={() => { void finishExperiment(true); }} disabled={isTransitioning}>追加の1問を解く</button>
+              </>}
+              {experimentStep === 3 && <button type="button" className="primary" onClick={() => { void finishExperiment(true); }} disabled={isTransitioning}>体験を終了</button>}
+            </>}
+          </div>
+        </header>
+      ) : <RibbonHeader
         activeTab={activeTab} setActiveTab={setActiveTab} tool={tool} setTool={setTool}
         eraserMode={eraserMode} setEraserMode={setEraserMode}
         brushColor={brushColor} setBrushColor={setBrushColor} brushWidth={brushWidth} setBrushWidth={setBrushWidth}
@@ -1304,8 +1659,10 @@ export default function Home() {
         }}
         praiseMode={praiseMode} setPraiseMode={setPraiseMode}
         handleUndo={handleUndo} saveStatus={saveStatus}
-      />
-      <section className="motivation-bar" aria-label="今日の学習状況">
+      />}
+      {isExperiment ? <section className="experiment-guide" aria-live="polite">
+        {activePage.skippedAt ? "この問題は筆記・振り返りなしで記録しました。上のボタンから次へ進めます。" : experimentLocked ? "振り返りを確認したら、上のボタンから次へ進んでください。" : "Apple Pencilかマウスで下のノートに書いてください。途中まででも大丈夫です。書いたら「振り返る」を押してください。書き始められない場合も記録して進めます。"}
+      </section> : <section className="motivation-bar" aria-label="今日の学習状況">
         <div className="motivation-message">
           <span>今日もノートを開けたね</span>
           <strong>{activePage.strokes.length > 0 ? `${activePage.strokes.filter(stroke => stroke.type === "draw").length}本の一歩を記録中` : "まず一画から始めよう"}</strong>
@@ -1317,14 +1674,13 @@ export default function Home() {
         </div>
         <button className="dashboard-button" onClick={() => { setShowDashboard(true); void refreshDashboard(true); }}><BarChart3 size={18} />成長を見る</button>
         <button className={`debug-button ${showDebug ? "active" : ""}`} onClick={() => setShowDebug(value => !value)} title="研究者向けデバッグ表示"><Bug size={17} />Debug</button>
-      </section>
-      {showDashboard && <LearningDashboard data={dashboard} loading={dashboardLoading} onClose={() => setShowDashboard(false)} />}
+      </section>}
+      {!isExperiment && showDashboard && <LearningDashboard data={dashboard} loading={dashboardLoading} onClose={() => setShowDashboard(false)} />}
       <div className="onenote-container">
-        <Sidebar sections={sections} activeSectionId={activeSectionId} activePageId={activePageId} handleSectionSwitch={handleSectionSwitch} handlePageSwitch={handlePageSwitch} handleAddSection={handleAddSection} handleAddPage={handleAddPage} />
+        {!isExperiment && <Sidebar sections={sections} activeSectionId={activeSectionId} activePageId={activePageId} handleSectionSwitch={handleSectionSwitch} handlePageSwitch={handlePageSwitch} handleAddSection={handleAddSection} handleAddPage={handleAddPage} />}
         <div className="canvas-main-area">
           <div className="canvas-header">
-            <input type="text" value={activePage.title} onChange={e => updateActivePage(p => ({ ...p, title: e.target.value }))} className="canvas-title-input" placeholder="無題のページ" />
-            <div className="canvas-date-label">{activePage.date}</div>
+            {isExperiment ? <><h1 className="experiment-problem-title">{activePage.title}</h1><span className="experiment-problem-subtitle">この問題をノートに解いてみましょう</span></> : <><input type="text" value={activePage.title} onChange={e => updateActivePage(p => ({ ...p, title: e.target.value }))} className="canvas-title-input" placeholder="無題のページ" /><div className="canvas-date-label">{activePage.date}</div></>}
           </div>
 <div className="canvas-body" style={{ display: "flex", flexDirection: "row", width: "100%", height: "100%", overflow: "hidden" }}>
   <div style={{ flex: 1, position: "relative", width: "100%", height: "100%" }}>
@@ -1333,13 +1689,13 @@ export default function Home() {
                 strokes={isReplaying ? replayedStrokes : activePage.strokes} setStrokes={setStrokesForActivePage}
                 images={activePage.images} setImages={setImagesForActivePage}
                 texts={activePage.texts} setTexts={setTextsForActivePage}
-                aiAnnotations={activePage.aiAnnotations}
+                aiAnnotations={isExperiment ? [] : activePage.aiAnnotations}
                 tool={tool} eraserMode={eraserMode} brushColor={brushColor} brushWidth={brushWidth} eraserWidth={eraserWidth} textStyle={textStyle}
-                isReplaying={isReplaying} initialPan={pageTransforms[activePageId]?.pan || { x: 0, y: 0 }} initialZoom={pageTransforms[activePageId]?.zoom || 1}
+                isReplaying={isReplaying || experimentLocked} initialPan={pageTransforms[activePageId]?.pan || { x: 0, y: 0 }} initialZoom={pageTransforms[activePageId]?.zoom || 1}
                 onTransformChange={(newPan, newZoom) => { setPageTransforms(previous => ({ ...previous, [activePageId]: { pan: newPan, zoom: newZoom } })); }}
-                onPointerDiagnostics={showDebug ? setPointerDiagnostics : undefined}
+                onPointerDiagnostics={!isExperiment && showDebug ? setPointerDiagnostics : undefined}
               />
-              {showDebug && (
+              {!isExperiment && showDebug && (
                 <DebugPanel
                   learnerState={activePage.learnerState}
                   dashboard={dashboard}
@@ -1354,7 +1710,7 @@ export default function Home() {
                   onClose={() => setShowDebug(false)}
                 />
               )}
-              {activeAssistance && (
+              {!isExperiment && activeAssistance && (
                 <aside aria-live="polite" style={{
                   position: "absolute", right: "20px", bottom: "24px", zIndex: 48,
                   width: "min(360px, calc(100% - 40px))", background: "#ffffff",
@@ -1396,7 +1752,7 @@ export default function Home() {
                   <button aria-label="エラーを閉じる" onClick={() => setAnalysisError(null)} style={{ border: "none", background: "transparent", color: "inherit", cursor: "pointer", padding: "2px", minWidth: "44px", minHeight: "44px", display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><X size={18} /></button>
                 </div>
               )}
-              {showProblemRegionSelector && activePage.images[0] && (
+              {!isExperiment && showProblemRegionSelector && activePage.images[0] && (
                 <ProblemRegionSelector
                   imageUrl={activePage.images[0].url}
                   initialRegion={activePage.problemRegion}
@@ -1459,7 +1815,7 @@ export default function Home() {
 
               {/* 🌟 ほめる先生の称賛ポップアップカード（モーダル） */}
               {showPraiseModal && (activePage.thoughtTypeBadge || activePage.aiSummary) && (
-                <ModalLayer title="ほめるAIの振り返り" onClose={() => setShowPraiseModal(false)}>
+                <ModalLayer title={isExperiment ? "今回の振り返り" : "ほめるAIの振り返り"} onClose={() => setShowPraiseModal(false)}>
                   <div style={{
                     backgroundColor: "#ffffff",
                     borderRadius: "24px",
@@ -1491,11 +1847,11 @@ export default function Home() {
                     <div style={{ textAlign: "center", display: "flex", flexDirection: "column", alignItems: "center", gap: "8px" }}>
                       <div style={{
                         display: "inline-flex", alignItems: "center", gap: "6px",
-                        background: "linear-gradient(135deg, #fef3c7 0%, #fde68a 100%)",
-                        color: "#b45309", padding: "6px 16px", borderRadius: "9999px",
-                        fontWeight: "bold", fontSize: "14px", border: "1px solid #fcd34d"
+                        background: isExperiment ? "#f5f3ff" : activePage.feedbackCondition === "neutral_summary" ? "#f1f5f9" : "linear-gradient(135deg, #fef3c7 0%, #fde68a 100%)",
+                        color: isExperiment ? "#5b21b6" : activePage.feedbackCondition === "neutral_summary" ? "#475569" : "#b45309", padding: "6px 16px", borderRadius: "9999px",
+                        fontWeight: "bold", fontSize: "14px", border: isExperiment ? "1px solid #ddd6fe" : activePage.feedbackCondition === "neutral_summary" ? "1px solid #cbd5e1" : "1px solid #fcd34d"
                       }}>
-                        <Award size={18} />
+                        {isExperiment || activePage.feedbackCondition === "neutral_summary" ? <FileText size={18} /> : <Award size={18} />}
                         {activePage.feedbackCondition === "neutral_summary" ? "今回の記録" : "今回見えた学び方"}
                       </div>
 
@@ -1507,7 +1863,7 @@ export default function Home() {
                       </h2>
                       <p style={{ margin: 0, fontSize: "13px", color: "#64748b" }}>
                         {activePage.feedbackCondition === "neutral_summary"
-                          ? "研究用の比較条件として、評価を加えず事実だけを表示しています。"
+                          ? "今回の筆記と見直しの記録です。"
                           : "実際に記録された筆記・見直し・再開から見つけました。"}
                       </p>
                     </div>
@@ -1535,7 +1891,7 @@ export default function Home() {
                       </div>
                     )}
 
-                    {activePage.learnerState && activePage.feedbackCondition !== "neutral_summary" && (
+                    {!isExperiment && activePage.learnerState && activePage.feedbackCondition !== "neutral_summary" && (
                       <div style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "12px", padding: "12px 14px", display: "flex", flexDirection: "column", gap: "9px" }}>
                         <div style={{ color: "#334155", fontWeight: 700, fontSize: "12px" }}>今の学び方に合わせたサポート</div>
                         {[
@@ -1559,7 +1915,7 @@ export default function Home() {
                     {activePage.praisePoints && activePage.praisePoints.length > 0 && (
                       <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
                         <div style={{ fontSize: "14px", fontWeight: "bold", color: "#334155", display: "flex", alignItems: "center", gap: "6px" }}>
-                          <Sparkle size={16} color="#eab308" />
+                          {isExperiment || activePage.feedbackCondition === "neutral_summary" ? <FileText size={16} color="#64748b" /> : <Sparkle size={16} color="#eab308" />}
                           {activePage.feedbackCondition === "neutral_summary" ? "記録された内容" : "取り組みの中で見つけた良かったところ"}
                         </div>
                         {activePage.praisePoints.map((point, idx) => (
@@ -1568,7 +1924,7 @@ export default function Home() {
                             backgroundColor: "#f8fafc", padding: "12px 16px", borderRadius: "12px",
                             border: "1px solid #e2e8f0"
                           }}>
-                            <CheckCircle2 size={20} color="#10b981" style={{ flexShrink: 0, marginTop: "2px" }} />
+                            {isExperiment || activePage.feedbackCondition === "neutral_summary" ? <FileText size={20} color="#64748b" style={{ flexShrink: 0, marginTop: "2px" }} /> : <CheckCircle2 size={20} color="#10b981" style={{ flexShrink: 0, marginTop: "2px" }} />}
                             <span style={{ fontSize: "14px", color: "#1e293b", lineHeight: "1.5", fontWeight: "500" }}>
                               {point}
                             </span>
@@ -1580,8 +1936,8 @@ export default function Home() {
                     {/* 先生からの温かいメッセージ */}
                     {(activePage.encouragementMessage || activePage.aiSummary) && (
                       <div style={{
-                        backgroundColor: "#f5f3ff", padding: "18px 20px", borderRadius: "16px",
-                        border: "1.5px solid #ddd6fe", display: "flex", flexDirection: "column", gap: "8px"
+                        backgroundColor: isExperiment ? "#f8fafc" : activePage.feedbackCondition === "neutral_summary" ? "#f8fafc" : "#f5f3ff", padding: "18px 20px", borderRadius: "16px",
+                        border: isExperiment ? "1.5px solid #cbd5e1" : activePage.feedbackCondition === "neutral_summary" ? "1.5px solid #cbd5e1" : "1.5px solid #ddd6fe", display: "flex", flexDirection: "column", gap: "8px"
                       }}>
                         <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "#5c2d91", fontWeight: "bold", fontSize: "15px" }}>
                           <Bot size={20} />
@@ -1594,7 +1950,7 @@ export default function Home() {
                     )}
 
                     {/* AI問題・文字認識の確認 */}
-                    {activePage.recognizedContent && (
+                    {!isExperiment && activePage.recognizedContent && (
                       <div style={{ fontSize: "12px", color: "#64748b", backgroundColor: "#f8fafc", padding: "12px 14px", borderRadius: "10px", border: "1px solid #e2e8f0", display: "flex", flexDirection: "column", gap: "6px" }}>
                         {activePage.recognizedContent.recognized_question && (
                           <div style={{ color: "#334155" }}>
@@ -1630,7 +1986,7 @@ export default function Home() {
                       </div>
                     )}
 
-                    {activePage.feedbackCondition !== "neutral_summary" && activePage.intervention && activePage.intervention.hint_levels.length > 0 && (
+                    {!isExperiment && activePage.feedbackCondition !== "neutral_summary" && activePage.intervention && activePage.intervention.hint_levels.length > 0 && (
                       <button
                         onClick={() => {
                           setActiveAssistance(activePage.intervention ?? null);
@@ -1643,7 +1999,7 @@ export default function Home() {
                     )}
 
                     {/* ボタン */}
-                    <button
+                    {!isExperiment ? <button
                       onClick={() => setShowPraiseModal(false)}
                       style={{
                         backgroundColor: "#5c2d91", color: "#ffffff", border: "none",
@@ -1653,13 +2009,17 @@ export default function Home() {
                       }}
                     >
                       {activePage.feedbackCondition === "neutral_summary" ? "ノートに戻る" : "💮 ノートの花丸と赤ペンを見る！"}
-                    </button>
+                    </button> : <><div className="experiment-modal-actions">
+                      {experimentStep < 2 && <button className="primary" type="button" onClick={() => { void advanceExperiment(); }} disabled={isTransitioning}>{isTransitioning ? "保存中…" : "次の問題へ"}</button>}
+                      {experimentStep === 2 && <><button type="button" onClick={() => { void finishExperiment(false); }} disabled={isTransitioning}>ここで終了</button><button className="primary" type="button" onClick={() => { void finishExperiment(true); }} disabled={isTransitioning}>追加の1問を解く</button></>}
+                      {experimentStep === 3 && <button className="primary" type="button" onClick={() => { void finishExperiment(true); }} disabled={isTransitioning}>体験を終了</button>}
+                    </div>{analysisError && <p role="alert" className="experiment-save-error">{analysisError}</p>}</>}
                   </div>
                 </ModalLayer>
               )}
 
               {/* 自由問題入力ダイアログ */}
-              {showCustomProblemModal && (
+              {!isExperiment && showCustomProblemModal && (
                 <ModalLayer title="自由な問題を設定" onClose={() => setShowCustomProblemModal(false)}>
                   <div style={{
                     backgroundColor: "#ffffff", borderRadius: "16px", padding: "28px",
@@ -1747,7 +2107,7 @@ export default function Home() {
               )}
 
               {/* モーダルが閉じた後も表示されるフローティングボタン */}
-              {activePage.thoughtTypeBadge && !showPraiseModal && (
+              {!isExperiment && activePage.thoughtTypeBadge && !showPraiseModal && (
                 <div style={{
                   position: "absolute", bottom: "24px", right: "24px",
                   display: "flex", flexDirection: "column", gap: "10px", zIndex: 40,
