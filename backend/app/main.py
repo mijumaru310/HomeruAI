@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 
 from fastapi import FastAPI, HTTPException, Request
@@ -10,7 +11,10 @@ from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
 from .analyzer import analyze_process
-from .config import ALLOWED_ORIGINS, DATABASE_PATH, GEMINI_API_KEY, HOST, MAX_REQUEST_BYTES, PORT
+from .config import (
+    ALLOWED_ORIGINS, GEMINI_API_KEY, HOST, MAX_REQUEST_BYTES, PORT,
+    TURSO_AUTH_TOKEN, TURSO_DATABASE_URL,
+)
 from .learner_model import choose_intervention, estimate_learner_state, merge_learner_state
 from .process_features import extract_process_features
 from .schemas import (
@@ -28,7 +32,9 @@ from .storage import ResearchStore
 
 
 logger = logging.getLogger("homeruai")
-store = ResearchStore(DATABASE_PATH)
+if os.getenv("VERCEL") and not (TURSO_DATABASE_URL and TURSO_AUTH_TOKEN):
+    raise RuntimeError("Vercel requires TURSO_DATABASE_URL and TURSO_AUTH_TOKEN for durable research data.")
+store = ResearchStore.from_config()
 
 app = FastAPI(
     title="HomeruAI Backend API",

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import argparse
 import json
-import sqlite3
 import sys
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -12,17 +12,17 @@ BACKEND = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND))
 
 from app.adaptive_model import FEATURE_NAMES
-from app.config import DATABASE_PATH, SUPPORT_MODEL_PATH
+from app.config import SUPPORT_MODEL_PATH
+from app.storage import ResearchStore
 
 
-def load_samples(database: str) -> tuple[list[list[float]], list[int], list[str]]:
-    connection = sqlite3.connect(database)
-    connection.row_factory = sqlite3.Row
-    events = connection.execute("""
-        SELECT learner_hash, session_hash, event_type, occurred_at_ms, payload_json
-        FROM study_events ORDER BY session_hash, occurred_at_ms
-    """).fetchall()
-    connection.close()
+def load_samples(database: str | None = None) -> tuple[list[list[float]], list[int], list[str]]:
+    store = ResearchStore.from_config(database)
+    with closing(store.connect()) as connection:
+        events = connection.execute("""
+            SELECT learner_hash, session_hash, event_type, occurred_at_ms, payload_json
+            FROM study_events ORDER BY session_hash, occurred_at_ms
+        """).fetchall()
     samples: list[list[float]] = []
     labels: list[int] = []
     groups: list[str] = []
@@ -76,7 +76,7 @@ def load_samples(database: str) -> tuple[list[list[float]], list[int], list[str]
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train an explainable support-need boundary model.")
-    parser.add_argument("--database", default=DATABASE_PATH)
+    parser.add_argument("--database", help="Explicit local SQLite file (otherwise use configured Turso or local DB).")
     parser.add_argument("--output", default=SUPPORT_MODEL_PATH)
     parser.add_argument("--minimum-samples", type=int, default=30)
     args = parser.parse_args()

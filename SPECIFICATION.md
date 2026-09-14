@@ -284,7 +284,7 @@ backend\venv\Scripts\python.exe -m pip install -r backend\requirements-ml.txt
 backend\venv\Scripts\python.exe backend\scripts\train_support_model.py
 ```
 
-既定の SQLite は `backend/data/homeruai.db`、モデルは `backend/models/support_model.json`。いずれも Git 管理外である。
+ローカル開発の既定 SQLite は `backend/data/homeruai.db`。Vercel では消えるローカルファイルを使わず、`TURSO_DATABASE_URL` と `TURSO_AUTH_TOKEN` で Turso の libSQL に接続する。研究用の監査・出力・再学習・撤回スクリプトも同じ環境変数を参照し、`--database` を指定した場合はそのローカル SQLite に切り替わる。公開手順は [`VERCEL_DEPLOYMENT.md`](./VERCEL_DEPLOYMENT.md) を参照。再学習モデルは `backend/models/support_policy.json` で Git 管理外である。
 
 ## 12. 実装済みと次の研究課題
 

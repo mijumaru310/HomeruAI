@@ -20,7 +20,8 @@ export function getOrCreateLearnerId(): string {
 
 export function apiUrl(path: string): string {
   if (process.env.NEXT_PUBLIC_API_URL) return `${process.env.NEXT_PUBLIC_API_URL}${path}`;
-  return `${window.location.protocol}//${window.location.hostname}:8000${path}`;
+  // Same-origin /api works for Vercel Services and the local Next.js rewrite.
+  return path;
 }
 
 async function postWithProxyFallback<T>(path: string, payload: unknown): Promise<T> {

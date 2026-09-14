@@ -27,6 +27,8 @@ DATA_DIR = (
     else os.path.join(BASE_DIR, _configured_data_dir)
 )
 DATABASE_PATH = os.path.join(DATA_DIR, "homeruai.db")
+TURSO_DATABASE_URL = os.getenv("TURSO_DATABASE_URL", "").strip()
+TURSO_AUTH_TOKEN = os.getenv("TURSO_AUTH_TOKEN", "").strip()
 SUPPORT_MODEL_PATH = os.getenv(
     "HOMERUAI_SUPPORT_MODEL",
     os.path.join(BASE_DIR, "models", "support_policy.json"),
