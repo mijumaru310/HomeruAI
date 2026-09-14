@@ -53,11 +53,11 @@ AI が返した称賛の根拠 ID が実在しない場合、その文章は採�
 | 文書入力 | pdfjs-dist 5、画像 File API |
 | エクスポート | jsPDF、Canvas PNG |
 | Backend | FastAPI 0.141.1、Pydantic 2.13.5、Uvicorn 0.52.4 |
-| AI | google-genai 2.22.0、`gemini-3.5-flash-lite`、候補 `gemini-3.6-flash` |
+| AI | google-genai 2.22.0、Vertex AI優先、Gemini APIキー予備経路。既定モデル `gemini-3.5-flash-lite`、APIキー側のモデル不在時候補 `gemini-3.6-flash` |
 | 保存 | IndexedDB（ノート）、SQLite（研究用の派生特徴・イベント） |
 | 任意の学習 | scikit-learn の標準化ロジスティック回帰。実行時は JSON 係数のみ使用 |
 
-外部AIプロバイダーは Gemini のみとする。認証、割当、モデル、スキーマ、タイムアウト、一時障害、ネットワークの失敗を分類し、外部AIが利用できなくてもローカルのプロセス称賛を返す。
+外部AIモデルは Gemini のみとし、接続先は Vertex AI → Gemini Developer APIキーの優先順にする。認識・称賛文生成の各段階でVertexを先に試し、認識段階でVertexが失敗した場合は同一分析中の称賛段階もAPIキー側を使う。認証、割当、モデル、スキーマ、タイムアウト、一時障害、ネットワークの失敗を分類し、両経路とも利用できない場合はローカルのプロセス称賛を返す。`analysis_runs.provider` と応答 `ai_provider` に実際の経路を記録する。
 
 ## 4. ディレクトリ
 
@@ -178,9 +178,9 @@ interface Stroke {
 
 ### POST `/api/analyze`
 
-必須: `questionId`、1件以上の `strokes`、Ghost `image`。任意で `questionText`、`sourceImage`、`sourceType`、`analysisBounds`、`learnerId`、`sessionId`、`problemDifficulty`、`hintCount`、`feedbackCondition` を受け取る。`feedbackCondition=neutral_summary` は研究比較用で、称賛・赤ペン・途中介入を行わず観測事実を評価語なしで要約する。
+必須: `questionId`、1件以上の `strokes`、Ghost `image`。任意で `questionText`、`sourceImage`、`sourceType`、`analysisBounds`、`learnerId`、`sessionId`、`problemDifficulty`、`hintCount`、`feedbackCondition` を受け取る。`feedbackCondition=neutral_summary` は研究比較用で、称賛・紫の過程マーク・途中介入を行わず観測事実を評価語なしで要約する。AI文面に正答照合していない正誤断定が含まれる場合は採用せず、操作記録からの称賛に切り替える。
 
-応答には `praise_points`、`praise_evidence`、`recognized_content`、`recognition_confidence`、`process_metrics`、`process_evidence`、`learner_state`、`intervention`、`source`、`provider_error_category`、`notice` を含む。
+応答には `praise_points`、`praise_evidence`、`recognized_content`、`recognition_confidence`、`process_metrics`、`process_evidence`、`learner_state`、`intervention`、`source`、`ai_provider`、`provider_error_category`、`notice` を含む。
 
 ### POST `/api/assist`
 
@@ -209,7 +209,7 @@ Gemini設定、構造化出力スキーマ互換性、ローカルフォール�
 - 研究者向け Debug パネルは、X1〜X4、生のプロセス特徴、認識確信度、分析元、Gemini失敗分類を確認できる。
 - Pointer Events の `pointerType`、筆圧、傾き、接触幅、合成イベント数を Debug パネルで確認できる。Apple Pencil入力中の指接触は描画終了として扱わず、パームリジェクションとして無視する。
 - `getCoalescedEvents()` が利用できる環境では、そのサンプルを筆跡へ取り込み、高速なPencil入力の欠落を減らす。
-- 丸・下線・花丸は根拠IDごとに一つだけ描き、称賛文はキャンバス上へ重ねず称賛カードへ分離する。過去保存データに重複があってもフロントエンドで重複描画を防ぐ。
+- 筆記プロセスの根拠IDごとに、小さな紫のキラリ印を筆跡の横へ一つだけ描く。正誤判定をしていないため、解答を囲む丸や赤ペンは描かない。過去保存データの丸・花丸・下線・文字もキラリ印として再表示し、重複描画を防ぐ。称賛文はキャンバス上へ重ねずカードに表示する。
 - 称賛は固定能力・人格ラベルと誇張を避け、「観測した行動→学習上の意味」を具体的に伝え、次の行動の選択を本人へ残す。
 
 ## 9. 障害時の挙動
@@ -250,7 +250,8 @@ py -3.13 -m venv venv
 .\venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 Copy-Item .env.example .env
-# .env の GEMINI_API_KEY を設定
+# .env の GOOGLE_CLOUD_PROJECT と GEMINI_API_KEY を設定
+# ローカルのVertex認証: gcloud auth application-default login
 python -m uvicorn app.main:app --reload --port 8000
 ```
 
@@ -304,7 +305,7 @@ backend\venv\Scripts\python.exe backend\scripts\train_support_model.py
 
 成人予備実験の対象、先行研究、外部アンケート項目、A/B実施URL、分析計画、研究上の限界は [`RESEARCH_PROTOCOL.md`](./RESEARCH_PROTOCOL.md) を参照する。アンケートや同意フォームはアプリ内に実装せず、研究責任者情報と撤回方法を含む外部フォームで実施する。
 
-研究用のプロトコル版は `adult-pilot-v1.2`。実験イベントのペイロードと割付CSVに保存する。実験画面は通常ノートの描画リボン・進行欄・問題一覧・称賛表示に寄せ、問題選択など研究上不要な操作のみ制限する。称賛条件は花丸・赤ペンを含み、比較条件は事実要約のみとするため、文面単体ではなく視覚表現を含む称賛体験の比較である。`backend/scripts/create_experiment_assignments.py` で割付、`backend/scripts/audit_experiment.py` で欠損・条件不一致・分析元を監査する。端末の撤回は同じブラウザで `/research/cleanup`、サーバーの撤回は `backend/scripts/withdraw_participant.py` を使う。CSV出力・バックアップ・外部アンケートは別途消去が必要。
+研究用のプロトコル版は `adult-pilot-v1.3`。実験イベントのペイロードと割付CSVに保存する。実験画面は通常ノートの描画リボン・進行欄・問題一覧・称賛表示に寄せ、問題選択など研究上不要な操作のみ制限する。称賛条件はプロセス称賛と紫のキラリ印を含み、比較条件は事実要約のみとするため、文面単体ではなく視覚表現を含む称賛体験の比較である。答えの正誤はいずれの条件でも判定しない。`backend/scripts/create_experiment_assignments.py` で割付、`backend/scripts/audit_experiment.py` で欠損・条件不一致・分析元を監査する。端末の撤回は同じブラウザで `/research/cleanup`、サーバーの撤回は `backend/scripts/withdraw_participant.py` を使う。CSV出力・バックアップ・外部アンケートは別途消去が必要。
 
 研究前に追加検討する項目:
 
@@ -319,6 +320,6 @@ backend\venv\Scripts\python.exe backend\scripts\train_support_model.py
 - 停止だけを根拠に「迷っている」「理解していない」と断定しない。
 - 能力値を成績や人格ラベルとして学習者へ提示しない。
 - 消去を失敗として罰しない。書き直し・検証の可能性として扱う。
-- 認識確信度が低い内容を正誤判定へ強く使わない。
+- 検証済みの模範解答と十分な認識精度がない状態で、筆記認識を正誤判定として見せない。
 - 学習データが少ない段階で、機械学習モデルだけに介入判断を任せない。
 - 生画像、生の筆跡、秘密情報を研究イベントへ保存しない。

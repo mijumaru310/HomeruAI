@@ -1,9 +1,12 @@
 import os
 import tempfile
 import unittest
+from unittest.mock import patch
 
 os.environ["GEMINI_API_KEY"] = "your_gemini_api_key_here"
 os.environ["HOMERUAI_DATA_DIR"] = tempfile.mkdtemp(prefix="homeruai-tests-")
+os.environ["TURSO_DATABASE_URL"] = ""
+os.environ["TURSO_AUTH_TOKEN"] = ""
 
 from fastapi.testclient import TestClient
 
@@ -15,6 +18,13 @@ ONE_PIXEL_PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfF
 
 class ApiTests(unittest.TestCase):
     def setUp(self):
+        self.api_key_patch = patch("app.analyzer.GEMINI_API_KEY", "your_gemini_api_key_here")
+        self.vertex_patch = patch("app.analyzer.VERTEX_PROJECT", "")
+        self.health_key_patch = patch("app.main.GEMINI_API_KEY", "your_gemini_api_key_here")
+        self.health_vertex_patch = patch("app.main.VERTEX_PROJECT", "")
+        for current_patch in (self.api_key_patch, self.vertex_patch, self.health_key_patch, self.health_vertex_patch):
+            current_patch.start()
+            self.addCleanup(current_patch.stop)
         self.client = TestClient(app)
 
     def test_health_exposes_capability_without_secrets(self):
@@ -22,9 +32,11 @@ class ApiTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.json()["fallback_available"])
-        self.assertEqual(response.json()["provider"]["name"], "gemini")
+        self.assertIn(response.json()["provider"]["name"], {"vertex_ai", "gemini_api"})
+        self.assertIn("vertex_configured", response.json()["provider"])
+        self.assertIn("api_key_fallback_configured", response.json()["provider"])
         self.assertTrue(response.json()["provider"]["structured_output_compatible"])
-        self.assertNotIn("api_key", response.text.lower())
+        self.assertNotIn("your_gemini_api_key_here", response.text)
 
     def test_analysis_works_without_external_ai(self):
         response = self.client.post("/api/analyze", json={

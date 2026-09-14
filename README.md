@@ -11,7 +11,7 @@
 ## 🌟 プロジェクトの概要
 
 HomeruAIは、iPadなどのタブレット端末で利用できるWebノートアプリケーションです。
-単に問題の正解・不正解を判定するだけでなく、**「解答に至るまでのプロセス」をAIが深く分析して評価（ほめる）** ことを最大の特徴としています。
+現在のHomeruAIは正誤を自動採点せず、**「解答に至るまでのプロセス」をAIが分析してほめる** ことを最大の特徴としています。ノート上の紫の印は取り組みを見つけた場所であり、正解の丸ではありません。
 
 学習者がアプリ上で問題を解くと、AIが以下のデータを多角的に分析します：
 
@@ -22,7 +22,7 @@ HomeruAIは、iPadなどのタブレット端末で利用できるWebノート�
 
 これらのデータを元に、「どこで迷ったのか」「問題に取り組む姿勢」「消してしまった思考の跡」までをAIが汲み取ります。学習者の弱点を発見して改善の道筋を示すだけでなく、プロセスそのものを「ほめる」ことで、モチベーションの向上と自発的な学習につなげます。
 
-ノートは教材画像を含めてブラウザ内へ自動保存されます。GeminiのAPIキーが未設定、またはAIサービスが一時的に利用できない場合も、筆跡・書き直し・停止後の再開を根拠にしたローカル称賛カードを返すため、プロトタイプの基本体験を試せます。
+ノートは教材画像を含めてブラウザ内へ自動保存されます。画像認識と称賛文生成は Vertex AI を先に試し、失敗時は Gemini APIキーへ切り替えます。両方を使えない場合も、筆跡・書き直し・停止後の再開を根拠にしたローカル称賛カードを返します。
 
 PDF教材は「挿入」から読み込むとページごとのノートになり、その上へ直接書き込めます。写真、入力した問題文、白紙への手書き問題にも対応しています。複数の設問が写っている場合は「問題範囲」で対象だけを囲めます。
 
@@ -42,7 +42,7 @@ npm install
 npm run dev
 ```
 
-ブラウザで `http://localhost:3000` を開きます。実AI分析を使う場合は `backend/.env.example` を `backend/.env` にコピーし、APIキーを設定してください。
+ブラウザで `http://localhost:3000` を開きます。実AI分析を使う場合は `backend/.env.example` を `backend/.env` にコピーし、`GOOGLE_CLOUD_PROJECT` と `GEMINI_API_KEY` を設定してください。ローカルのVertex認証には `gcloud auth application-default login` を使用します。プロジェクトのVertex AI API・課金・IAM権限も必要です。APIキーだけでも従来どおり動作します。
 
 Vercel への公開は [VERCEL_DEPLOYMENT.md](./VERCEL_DEPLOYMENT.md) を参照してください。公開時の研究ログはローカル SQLite ではなく Turso の永続DBに保存します。
 
@@ -87,7 +87,7 @@ backend\venv\Scripts\python.exe backend\scripts\train_support_model.py
 ## 🛠️ 技術スタック (Current)
 - **Frontend**: Next.js, React, TypeScript
 - **Backend**: FastAPI, Python
-- **AI Model**: Gemini API（画像認識と根拠付き称賛を分離）
+- **AI Model**: Vertex AI優先・Gemini APIキー予備経路（画像認識と根拠付き称賛を分離）
 - **Adaptive learning**: 説明可能な初期ルール + 再学習可能なロジスティック回帰
 - **Research data**: SQLite（匿名イベント・派生特徴量のみ）
 - **Deployment**: Localhost (開発中)

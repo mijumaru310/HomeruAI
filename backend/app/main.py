@@ -12,7 +12,7 @@ from starlette.concurrency import run_in_threadpool
 
 from .analyzer import analyze_process
 from .config import (
-    ALLOWED_ORIGINS, GEMINI_API_KEY, HOST, MAX_REQUEST_BYTES, PORT,
+    ALLOWED_ORIGINS, GEMINI_API_KEY, HOST, MAX_REQUEST_BYTES, PORT, VERTEX_PROJECT,
     TURSO_AUTH_TOKEN, TURSO_DATABASE_URL,
 )
 from .learner_model import choose_intervention, estimate_learner_state, merge_learner_state
@@ -108,7 +108,7 @@ async def analyze_strokes(request: AnalysisRequest):
             analysis_id=result.analysis_id or "unknown",
             learner_id=request.learnerId,
             session_id=request.sessionId,
-            provider="gemini" if result.source in {"ai", "hybrid"} else "local",
+            provider=result.ai_provider,
             status=result.source,
             error_category=result.provider_error_category,
             latency_ms=latency_ms,
@@ -196,8 +196,10 @@ async def health():
         "status": "healthy",
         "message": "HomeruAI Backend is ready",
         "provider": {
-            "name": "gemini",
-            "configured": bool(GEMINI_API_KEY and GEMINI_API_KEY != "your_gemini_api_key_here"),
+            "name": "vertex_ai" if VERTEX_PROJECT else "gemini_api",
+            "configured": bool(VERTEX_PROJECT or (GEMINI_API_KEY and GEMINI_API_KEY != "your_gemini_api_key_here")),
+            "vertex_configured": bool(VERTEX_PROJECT),
+            "api_key_fallback_configured": bool(GEMINI_API_KEY and GEMINI_API_KEY != "your_gemini_api_key_here"),
             "structured_output_compatible": "prefixItems" not in schema_text,
         },
         "research_store": {"configured": True, "stores_raw_images": False},

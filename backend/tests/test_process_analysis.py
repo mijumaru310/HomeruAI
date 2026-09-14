@@ -1,7 +1,7 @@
 import unittest
 
-from app.analyzer import build_local_fallback, calculate_pauses, calculate_process_metrics
-from app.schemas import StrokeSchema
+from app.analyzer import _has_unverified_grade_claim, build_local_fallback, calculate_pauses, calculate_process_metrics
+from app.schemas import AIFeedback, AIPraisePoint, StrokeSchema
 
 
 def stroke(
@@ -70,6 +70,7 @@ class ProcessAnalysisTests(unittest.TestCase):
         self.assertNotIn("Error", response.summary)
         self.assertEqual(len({item.evidence_id for item in response.annotations}), len(response.annotations))
         self.assertTrue(all(item.comment is None for item in response.annotations))
+        self.assertTrue(all(item.type == "process_marker" for item in response.annotations))
 
     def test_local_praise_describes_behavior_without_fixed_ability_label(self):
         response = build_local_fallback(
@@ -99,6 +100,19 @@ class ProcessAnalysisTests(unittest.TestCase):
         self.assertNotIn("消して", response.encouragement_message)
         self.assertNotIn("止まったあと", response.encouragement_message)
         self.assertNotIn("筆跡を重ねた", " ".join(response.praise_points))
+
+    def test_unverified_correctness_claim_is_rejected(self):
+        def feedback(message: str) -> AIFeedback:
+            return AIFeedback(
+                thought_type_badge="取り組みを振り返った",
+                praise_points=[AIPraisePoint(evidence_id=f"e{i}", message=message) for i in range(3)],
+                encouragement_message="ここまで書いたね。",
+                summary="筆記の過程を見ました。",
+            )
+
+        self.assertTrue(_has_unverified_grade_claim(feedback("答えは正解です。")))
+        self.assertTrue(_has_unverified_grade_claim(feedback("その式は合っています。")))
+        self.assertFalse(_has_unverified_grade_claim(feedback("消したあとに書き直したね。")))
 
     def test_overnight_gap_is_not_misclassified_as_thinking(self):
         next_day = [

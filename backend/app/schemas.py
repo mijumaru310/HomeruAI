@@ -51,7 +51,8 @@ class AnnotationSchema(BaseModel):
     box_2d: Annotated[
         list[NormalizedCoordinate], Field(min_length=4, max_length=4)
     ] = Field(description="[ymin, xmin, ymax, xmax] normalized coordinates")
-    type: Literal["circle", "underline", "text", "stamp"]
+    # Legacy shapes are accepted for saved data; new praise is not a grade mark.
+    type: Literal["process_marker", "circle", "underline", "text", "stamp"]
     comment: Optional[str] = Field(None, max_length=160)
     evidence_id: Optional[str] = Field(None, max_length=128)
 
@@ -181,6 +182,7 @@ class AnalysisResponse(BaseModel):
     summary: Optional[str] = Field(None, max_length=2_000)
     annotations: list[AnnotationSchema] = Field(default_factory=list, max_length=20)
     source: Literal["ai", "local_fallback", "hybrid"] = "ai"
+    ai_provider: Literal["vertex_ai", "gemini_api", "mixed", "local"] = "local"
     provider_error_category: Optional[Literal[
         "configuration", "auth", "quota", "model", "schema",
         "timeout", "temporary", "network", "unknown",

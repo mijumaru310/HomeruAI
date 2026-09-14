@@ -14,7 +14,7 @@ import {
   Award, FileText, Maximize2, Plus, Eye, EyeOff, Move,
   Type, Scissors, Download, Bold, Italic, Underline, ImagePlus, Bot, Loader2,
   CheckCircle2, X, Sparkle, Undo2, Cloud, CloudOff
-  , BarChart3, Bug, Flame, Flower2
+  , BarChart3, Bug, Flame
 } from "lucide-react";
 import { generateGhostRender } from "../utils/ghostRenderer";
 import { loadWorkspace, saveWorkspace } from "../utils/notebookStorage";
@@ -1362,7 +1362,7 @@ export default function Home() {
       const bounds = ghostResult.virtualBounds;
       const imgId = targetImage ? targetImage.id : "canvas_base";
 
-      const allowedAnnotationTypes = new Set(["circle", "underline", "text", "stamp"] as const);
+      const allowedAnnotationTypes = new Set(["process_marker", "circle", "underline", "text", "stamp"] as const);
       const annotations: AIAnnotation[] = (Array.isArray(result.annotations) ? result.annotations : []).flatMap((mark, i) => {
         if (!Array.isArray(mark.box_2d) || mark.box_2d.length !== 4 || !allowedAnnotationTypes.has(mark.type)) return [];
         let box = mark.box_2d.map(value => Math.max(0, Math.min(1000, Math.round(Number(value))))) as [number, number, number, number];
@@ -1382,7 +1382,7 @@ export default function Home() {
           type: mark.type,
           box_2d: box,
           comment: mark.comment || undefined,
-          color: mark.type === "circle" ? "#107c41" : "#e81123",
+          color: "#7c3aed",
           virtualBounds: targetImage ? undefined : bounds,
           evidenceId: mark.evidence_id,
         }];
@@ -1706,7 +1706,7 @@ export default function Home() {
         <button className={`debug-button ${showDebug ? "active" : ""}`} onClick={() => setShowDebug(value => !value)} title="研究者向けデバッグ表示"><Bug size={17} />Debug</button>
       </section>}
       {isExperiment && <section className="experiment-guide" aria-live="polite">
-        {activePage.skippedAt ? "この問題は筆記なしで記録しました。次の問題へ進めます。" : experimentLocked ? activePage.feedbackCondition === "neutral_summary" ? "振り返りを確認したら、次へ進んでください。" : "ノートの花丸も見られます。準備ができたら次へ進んでください。" : "下のノートに書いてください。途中まででも大丈夫。書いたら右上の「振り返る」を押します。"}
+        {activePage.skippedAt ? "この問題は筆記なしで記録しました。次の問題へ進めます。" : experimentLocked ? activePage.feedbackCondition === "neutral_summary" ? "振り返りを確認したら、次へ進んでください。" : "紫の印は取り組みの記録です。正解の丸ではありません。準備ができたら次へ進んでください。" : "下のノートに書いてください。途中まででも大丈夫。書いたら右上の「振り返る」を押します。"}
       </section>}
       {!isExperiment && showDashboard && <LearningDashboard data={dashboard} loading={dashboardLoading} onClose={() => setShowDashboard(false)} />}
       <div className="onenote-container">
@@ -1721,6 +1721,7 @@ export default function Home() {
         <div className="canvas-main-area">
           <div className="canvas-header">
             {isExperiment ? <><h1 className="canvas-title-input experiment-canvas-title">{activePage.title}</h1><div className="canvas-date-label">この問題をノートに解いてみましょう</div></> : <><input type="text" value={activePage.title} onChange={e => updateActivePage(p => ({ ...p, title: e.target.value }))} className="canvas-title-input" placeholder="無題のページ" /><div className="canvas-date-label">{activePage.date}</div></>}
+            {activePage.feedbackCondition !== "neutral_summary" && activePage.aiAnnotations.length > 0 && <div className="process-mark-legend"><Sparkles size={14} />紫の印は取り組みを見つけた場所です。正誤判定ではありません。</div>}
           </div>
 <div className="canvas-body" style={{ display: "flex", flexDirection: "row", width: "100%", height: "100%", overflow: "hidden" }}>
   <div style={{ flex: 1, position: "relative", width: "100%", height: "100%" }}>
@@ -1908,8 +1909,13 @@ export default function Home() {
                       </p>
                     </div>
 
+                    <div className="answer-verification-note" role="note">
+                      <strong>答えの正誤は判定していません</strong>
+                      <span>{activePage.feedbackCondition === "neutral_summary" ? "ここには記録された操作の要約を表示しています。" : "紫の印と称賛は、筆記・見直しなどの過程に対するものです。正解の丸ではありません。"}</span>
+                    </div>
+
                     {activePage.feedbackCondition !== "neutral_summary" && <div className="praise-celebration" aria-label="記録から見つけた一歩">
-                      <span className="praise-celebration-icon" aria-hidden="true"><Flower2 size={36} /></span>
+                      <span className="praise-celebration-icon" aria-hidden="true"><Sparkles size={36} /></span>
                       <div><span className="praise-celebration-kicker">あなたの過程を見つけたよ</span><strong>{praiseMoment(activePage.processMetrics)}</strong></div>
                     </div>}
 
@@ -2003,7 +2009,7 @@ export default function Home() {
                           </div>
                         )}
                         <div>
-                          <strong>✍️ 読み取った式・答え:</strong> {activePage.recognizedContent.current_answer || "手書き解答"}
+                          <strong>✍️ 読み取り候補（正誤未確認）:</strong> {activePage.recognizedContent.current_answer || "手書き解答"}
                         </div>
                         {activePage.recognizedContent.erased_attempts && activePage.recognizedContent.erased_attempts !== "なし" && (
                           <div style={{ color: "#e11d48" }}>
@@ -2043,7 +2049,7 @@ export default function Home() {
                       </button>
                     )}
 
-                    {/* 両モードともノートへ戻ってから次へ進む。称賛群では花丸も目に入る。 */}
+                    {/* 両モードともノートへ戻ってから次へ進む。印は正誤とは無関係。 */}
                     <button
                       onClick={() => setShowPraiseModal(false)}
                       className="praise-return-button"
@@ -2054,7 +2060,7 @@ export default function Home() {
                         transition: "transform 0.1s ease"
                       }}
                     >
-                      {activePage.feedbackCondition === "neutral_summary" ? "ノートに戻る" : "💮 ノートの花丸と赤ペンを見る！"}
+                      {activePage.feedbackCondition === "neutral_summary" ? "ノートに戻る" : "✦ ノートの取り組みマークを見る"}
                     </button>
                     {isExperiment && analysisError && <p role="alert" className="experiment-save-error">{analysisError}</p>}
                   </div>

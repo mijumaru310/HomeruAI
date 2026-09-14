@@ -43,15 +43,15 @@ export interface CanvasText {
   height?: number;
 }
 
-/** AIが画像上に付けるアノテーション（画像相対座標で管理） */
+/** 筆記プロセスを見つけた位置。正誤判定ではない。 */
 export interface AIAnnotation {
   id: string;
   imageId: string;             // 紐づく画像のID
-  type: "circle" | "underline" | "text" | "stamp";  // ○、下線、文字書き入れ、花丸スタンプ
+  type: "process_marker" | "circle" | "underline" | "text" | "stamp";  // 後半は過去の保存データとの互換用
   // 画像相対座標 (0-1000 スケール) [ymin, xmin, ymax, xmax]
   box_2d: [number, number, number, number];
   comment?: string;            // 文字書き入れの内容
-  color?: string;              // 色 (default: circle=#107c41, underline/text/stamp=#e81123)
+  color?: string;              // 過去の保存データとの互換用。表示時は過程マークの紫色に統一する
   virtualBounds?: { x: number; y: number; width: number; height: number };
   evidenceId?: string;
 }
@@ -83,7 +83,7 @@ export interface AnalysisResponseData {
   analysis_id?: string;
   annotations: {
     box_2d: [number, number, number, number];
-    type: "circle" | "underline" | "text" | "stamp";
+    type: "process_marker" | "circle" | "underline" | "text" | "stamp";
     comment?: string;
     evidence_id?: string;
   }[];
