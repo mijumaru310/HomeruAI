@@ -166,7 +166,10 @@ def _feedback_prompt(
 - 「天才」「頭がいい」「○○タイプ」のような能力・人格ラベルを使わない。
 - 「絶対」「完璧」「ものすごい」など、観測量を超えた誇張を避ける。小さな行動も事実に即して認める。
 - 「次も必ず」「こうするべき」のように統制せず、次の行動は本人が選べる言い方にする。
-- 3件は可能な限り別の根拠を使い、「何をしたか→それが学びにどう役立つか」を短く伝える。
+- 3件は可能な限り別の根拠を使い、最初の一画・消去や書き直し・停止後の再開があれば優先して見つける。
+- 「実際にしたこと→その行動が考えを進めるうえで持つ意味→温かい承認」を、本人に話しかける自然な日本語で伝える。「見つけたよ」「ここがいいね」などの親しみはよいが、観測できない意図や理解度を作らない。
+- 消去した線も、何を正しいと判断したかは断定せず、「見直した過程が残っている」と具体的に認める。
+- encouragement_message は評価や次の課題の指示よりも、今の取り組みを受け止めた短いメッセージを先に置く。続けるかどうかは学習者に委ねる。
 - thought_type_badge は固定的なタイプ名ではなく、「書き直して確かめた」のような今回の行動を表す。
 - ヒントは答えを直接出さず、考える足場を易しい順に最大3段階作る。
 - ほめ方モードは {praise_mode}、選択済み介入方針は {intervention_action}。
@@ -196,31 +199,39 @@ def _local_praise(
     if "first_step" in by_kind:
         result.append(PraiseEvidence(
             evidence_id=by_kind["first_step"].evidence_id,
-            message="まず一画を書いて、考えをノートの上で始められたね。この一歩が次の手掛かりにつながるよ。",
+            message="最初の一画をノートに置けたね。白紙から自分の考えを動かした、その始まりをちゃんと見つけたよ。",
         ))
     revision = by_kind.get("successful_revision") or by_kind.get("revision")
     if revision:
         result.append(PraiseEvidence(
             evidence_id=revision.evidence_id,
-            message="一度書いたところを消して近くに書き直したね。自分の考えを確かめ直す行動ができているよ。",
+            message=(
+                "いったん消して、同じ場所に書き直したね。見直したあとに新しい形を試したところ、しっかり見えているよ。"
+                if revision.kind == "successful_revision" else
+                "書いたものをいったん消して見直したね。消した線も、考えを確かめようとした過程として残っているよ。"
+            ),
         ))
     pause = by_kind.get("productive_pause") or by_kind.get("restart")
     if pause:
         result.append(PraiseEvidence(
             evidence_id=pause.evidence_id,
-            message=f"{pause.duration_seconds:g}秒ペンが止まったあと、自分で書き始められたね。止まっても取り組みに戻れたことが大事だよ。",
+            message=f"{pause.duration_seconds:g}秒ペンを止めたあと、もう一度自分で書き始めたね。止まっても戻ってきた一歩を見つけたよ。",
         ))
     if len(result) < 3:
         persistence = by_kind.get("persistence") or (evidence[-1] if evidence else None)
         if persistence:
             result.append(PraiseEvidence(
                 evidence_id=persistence.evidence_id,
-                message=f"{metrics.stroke_count}本の筆跡を使って、考えを見える形にしたね。途中の考えが残ると、次に確かめやすくなるよ。",
+                message=(
+                    f"{metrics.stroke_count}本の筆跡を重ねたね。考えを目に見える形に残した積み重ねを、ここまで大切にしたいよ。"
+                    if metrics.stroke_count > 1 else
+                    "自分の手で一画を残せたね。考えを目に見える形にしたことを大切にしたいよ。"
+                ),
             ))
     if evidence:
         extra_messages = [
-            "答えを見る前に、自分の手で考えを記録できたね。今の書き方を手掛かりに次を選べるよ。",
-            "小さくても実際の筆跡を残せたね。どこから考えたかを後で振り返れるよ。",
+            "この筆跡は、あとで自分の考えを見返す手がかりになるよ。途中の一歩もノートに残せているね。",
+            "小さくても実際の筆跡を残せたね。どこから始めたかを後で振り返れるのがいいね。",
         ]
         while len(result) < 3:
             result.append(PraiseEvidence(
@@ -230,7 +241,7 @@ def _local_praise(
     if state.mastery >= 0.7 and result:
         result[-1] = PraiseEvidence(
             evidence_id=result[-1].evidence_id,
-            message="自分で手順を組み立ててここまで進めたね。続けるなら、別の考え方を試すことも自分で選べるよ。",
+            message="ここまでの筆記を自分の手で残したね。次に何を確かめるかも、自分のペースで選べるよ。",
         )
     return result[:3]
 
@@ -327,22 +338,29 @@ def build_local_fallback(
         })
     praise = _neutral_observations(metrics) if neutral else _local_praise(metrics, evidence, state, praise_mode)
     annotations = [] if neutral else _unique_annotations(praise, evidence, analysis_bounds)
+    if praise_mode == "challenge":
+        encouragement = "ここまで自分で取り組んだ過程が残っているよ。続けるなら、別の確かめ方を試すのも自分で選べるよ。"
+    elif metrics.revision_count and metrics.restart_count:
+        encouragement = "消して書き直し、もう一度進めたところまで見えたよ。その試行錯誤を大切にしたいね。続け方は自分のペースで選べるよ。"
+    elif metrics.revision_count:
+        encouragement = "消して見直した過程まで見えたよ。その一歩を大切にしたいね。続け方は自分のペースで選べるよ。"
+    elif metrics.restart_count:
+        encouragement = "止まったあとにもう一度書き始めたね。その一歩をちゃんと見つけたよ。続け方は自分のペースで選べるよ。"
+    elif metrics.stroke_count:
+        encouragement = "自分の手で書いた一画が残っているよ。ここから始めたことをちゃんと見つけた。続け方は自分のペースで選べるよ。"
+    else:
+        encouragement = "ここまでノートを開いて取り組んだね。次に何をするかは自分のペースで選べるよ。"
     return AnalysisResponse(
         thought_type_badge=(
             "取り組み記録" if neutral else
             "書き直して確かめた" if metrics.revision_count else
             "止まったあとにもう一度進めた" if metrics.restart_count else
-            "考えを一画から形にした"
+            "考えを一画から形にした" if metrics.stroke_count else "ノートに向き合った"
         ),
         feedback_condition="neutral_summary" if neutral else "process_praise",
         praise_points=[item.message for item in praise],
         praise_evidence=praise,
-        encouragement_message=(
-            "記録を確認しました。ここで終えるか、次へ進むかを選んでください。" if neutral else
-            "ここまで自分の手で考えた過程が残っているよ。続け方は、自分のペースで選んで大丈夫。"
-            if praise_mode != "challenge" else
-            "ここまでの手順を使えそうだね。続けるなら、『なぜこの手順か』を考える方法もあるよ。"
-        ),
+        encouragement_message="記録を確認しました。ここで終えるか、次へ進むかを選んでください。" if neutral else encouragement,
         recognized_content=RecognizedContent(
             recognized_question=question_title,
             current_answer="AI画像認識を利用できないため、筆記内容の断定はしていません。",
@@ -351,7 +369,7 @@ def build_local_fallback(
         summary=(
             "記録された操作量と時間を、評価語を加えず表示しました。"
             if neutral else
-            "正誤ではなく、実際に記録された筆記・消去・停止後の再開を根拠に称賛しました。"
+            "正誤ではなく、実際に記録された行動を根拠に称賛しました。"
         ),
         annotations=annotations,
         source="local_fallback",
@@ -523,7 +541,7 @@ def analyze_process(
         praise_evidence=praise,
         encouragement_message=(
             feedback.encouragement_message if feedback else
-            "自分の手で考えを進めた過程が残っているよ。次に何をするかは自分で選べるよ。"
+            "自分の手で考えを動かした足跡が残っているよ。その一歩をちゃんと見つけた。次に何をするかは自分で選べるよ。"
         ),
         recognized_content=RecognizedContent(
             recognized_question=recognition.recognized_question or metadata["description"],

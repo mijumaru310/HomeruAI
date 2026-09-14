@@ -14,7 +14,7 @@ from urllib.parse import urlencode, urlparse, urlunparse
 
 
 SETS = ("easy", "standard", "challenge")
-PROTOCOL_VERSION = "adult-pilot-v1.1"
+PROTOCOL_VERSION = "adult-pilot-v1.2"
 
 
 def build_assignments(counts: dict[str, int], base_url: str) -> list[dict[str, str]]:

@@ -658,23 +658,23 @@ html, body {
 .experiment-complete-note { color: #64748b; font-size: 13px; }
 .experiment-sync-alert { max-width: 620px; display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 18px; border: 1px solid #f59e0b; border-radius: 14px; background: #fffbeb; color: #92400e; }
 .experiment-sync-alert button { min-height: 44px; padding: 9px 16px; border: 0; border-radius: 10px; background: #92400e; color: #fff; font: inherit; font-weight: 700; cursor: pointer; }
-.experiment-header {
-  display: flex;
-  align-items: center;
-  gap: 20px;
-  padding: 10px max(18px, env(safe-area-inset-right)) 10px max(18px, env(safe-area-inset-left));
-  background: #fff;
-  border-bottom: 1px solid #ddd6fe;
-  box-shadow: 0 4px 18px rgba(76, 29, 149, .06);
-  z-index: 20;
-  flex-shrink: 0;
-}
-.experiment-heading { display: flex; flex-direction: column; min-width: 160px; gap: 3px; color: #312e81; }
-.experiment-heading strong { font-size: 20px; }
-.experiment-kicker { color: #6d28d9; font-size: 11px; font-weight: 800; letter-spacing: .06em; }
-.experiment-progress { display: flex; gap: 6px; margin-right: auto; }
-.experiment-progress span { width: 24px; height: 7px; border-radius: 999px; background: #e5e7eb; }
-.experiment-progress span.active { background: #8b5cf6; }
+.experiment-ribbon .ribbon-tab { cursor: default; }
+.experiment-save-status { display: inline-flex; align-items: center; gap: 4px; color: #e1dfdd; font-size: 11px; }
+.experiment-header-actions { display: flex; align-items: center; justify-content: flex-end; gap: 12px; min-width: 0; }
+.experiment-current-problem { font-size: 12px; font-weight: 700; color: #f5e9ff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.experiment-analyze-button { min-height: 44px; background: #ffb900; color: #323130; border-color: #ffb900; font-weight: 800; box-shadow: 0 2px 8px #0003; }
+.experiment-ribbon-content { gap: 12px; }
+.experiment-ribbon-content .btn { min-height: 44px; touch-action: manipulation; }
+.experiment-ribbon-content .btn:disabled, .experiment-ribbon-content input:disabled, .experiment-ribbon-content select:disabled { opacity: .45; cursor: not-allowed; }
+.experiment-color-group { min-height: 48px; }
+.experiment-tool-setting, .experiment-tool-settings, .experiment-tool-settings label { display: flex; align-items: center; gap: 8px; color: #605e5c; font-size: 11px; }
+.experiment-tool-setting input, .experiment-tool-settings input { width: 92px; accent-color: #5c2d91; }
+.experiment-tool-settings select { min-height: 36px; border: 1px solid #c8c6c4; border-radius: 6px; background: #fff; }
+.experiment-motivation-bar { flex-wrap: wrap; }
+.experiment-level { min-width: 160px; max-width: 280px; grid-template-columns: auto minmax(60px, 1fr); }
+.experiment-actions { margin-left: auto; }
+.experiment-section-sidebar .sidebar-add-btn, .experiment-page-sidebar .sidebar-add-btn { cursor: default; }
+.experiment-page-sidebar .page-item { cursor: default; }
 .experiment-actions, .experiment-modal-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .experiment-actions button, .experiment-modal-actions button {
   min-height: 44px;
@@ -689,24 +689,31 @@ html, body {
   cursor: pointer;
   touch-action: manipulation;
 }
-.experiment-actions button.selected { background: #ede9fe; border-color: #7c3aed; }
 .experiment-actions button.primary, .experiment-modal-actions button.primary { background: #6d28d9; border-color: #6d28d9; color: #fff; }
 .experiment-actions button:disabled, .experiment-modal-actions button:disabled { opacity: .45; cursor: not-allowed; }
 .experiment-actions button:focus-visible, .experiment-modal-actions button:focus-visible { outline: 3px solid #f59e0b; outline-offset: 2px; }
 .experiment-guide { flex-shrink: 0; padding: 9px 22px; background: #faf5ff; color: #5b21b6; font-size: 13px; font-weight: 650; line-height: 1.5; }
-.experiment-app .canvas-header { padding: 11px 22px; }
-.experiment-problem-title { margin: 0; color: #1e293b; font-size: 20px; }
-.experiment-problem-subtitle { color: #64748b; font-size: 12px; }
+.experiment-canvas-title { margin: 0; }
 .experiment-modal-actions { justify-content: flex-end; }
 .experiment-save-error { margin: 0; color: #b91c1c; font-size: 13px; line-height: 1.5; }
 
+.praise-celebration { display: flex; align-items: center; gap: 16px; padding: 18px; border: 1px solid #fcd34d; border-radius: 18px; background: linear-gradient(120deg, #fff7ed, #fdf2f8 58%, #faf5ff); box-shadow: 0 8px 24px #be185d15; }
+.praise-celebration-icon { flex: 0 0 62px; width: 62px; height: 62px; display: grid; place-items: center; color: #b45309; background: #fef3c7; border: 2px solid #fcd34d; border-radius: 50%; animation: praise-bloom .7s ease-out both; }
+.praise-celebration > div { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.praise-celebration-kicker { color: #9d174d; font-size: 12px; font-weight: 800; }
+.praise-celebration strong { color: #581c87; font-size: clamp(17px, 2.8vw, 22px); line-height: 1.4; }
+.praise-return-button { min-height: 48px; touch-action: manipulation; }
+@keyframes praise-bloom { from { opacity: 0; transform: scale(.7) rotate(-20deg); } to { opacity: 1; transform: scale(1) rotate(0); } }
+@media (prefers-reduced-motion: reduce) { .praise-celebration-icon { animation: none; } }
+
 @media (max-width: 900px) {
-  .experiment-header { align-items: flex-start; flex-wrap: wrap; gap: 8px 12px; }
-  .experiment-heading { min-width: 0; }
-  .experiment-progress { align-self: center; }
-  .experiment-actions { width: 100%; }
-  .experiment-actions button { flex: 1 1 auto; }
-  .experiment-actions button.primary { flex-grow: 2; }
+  .experiment-ribbon .onenote-header-top > .experiment-header-actions { display: flex !important; align-items: center; justify-content: flex-start; width: 100%; }
+  .experiment-ribbon .experiment-header-actions > .experiment-current-problem { display: block !important; flex: 1; }
+  .experiment-ribbon-content .ribbon-group { flex-wrap: wrap; height: auto; }
+  .experiment-motivation-bar { gap: 8px; }
+  .experiment-motivation-bar .motivation-message { min-width: 120px; }
+  .experiment-motivation-bar .experiment-level { flex: 1; min-width: 125px; }
+  .experiment-actions { width: auto; }
   .experiment-guide { padding: 8px 14px; }
 }
 
