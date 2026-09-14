@@ -304,7 +304,7 @@ backend\venv\Scripts\python.exe backend\scripts\train_support_model.py
 
 成人予備実験の対象、先行研究、外部アンケート項目、A/B実施URL、分析計画、研究上の限界は [`RESEARCH_PROTOCOL.md`](./RESEARCH_PROTOCOL.md) を参照する。アンケートや同意フォームはアプリ内に実装せず、研究責任者情報と撤回方法を含む外部フォームで実施する。
 
-研究用のプロトコル版は `adult-pilot-v1.1`。実験イベントのペイロードと割付CSVに保存する。`backend/scripts/create_experiment_assignments.py` で割付、`backend/scripts/audit_experiment.py` で欠損・条件不一致・分析元を監査する。端末の撤回は同じブラウザで `/research/cleanup`、サーバーの撤回は `backend/scripts/withdraw_participant.py` を使う。CSV出力・バックアップ・外部アンケートは別途消去が必要。
+研究用のプロトコル版は `adult-pilot-v1.2`。実験イベントのペイロードと割付CSVに保存する。実験画面は通常ノートの描画リボン・進行欄・問題一覧・称賛表示に寄せ、問題選択など研究上不要な操作のみ制限する。称賛条件は花丸・赤ペンを含み、比較条件は事実要約のみとするため、文面単体ではなく視覚表現を含む称賛体験の比較である。`backend/scripts/create_experiment_assignments.py` で割付、`backend/scripts/audit_experiment.py` で欠損・条件不一致・分析元を監査する。端末の撤回は同じブラウザで `/research/cleanup`、サーバーの撤回は `backend/scripts/withdraw_participant.py` を使う。CSV出力・バックアップ・外部アンケートは別途消去が必要。
 
 研究前に追加検討する項目:
 

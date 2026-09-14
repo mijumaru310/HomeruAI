@@ -14,13 +14,13 @@ import {
   Award, FileText, Maximize2, Plus, Eye, EyeOff, Move,
   Type, Scissors, Download, Bold, Italic, Underline, ImagePlus, Bot, Loader2,
   CheckCircle2, X, Sparkle, Undo2, Cloud, CloudOff
-  , BarChart3, Bug, Flame
+  , BarChart3, Bug, Flame, Flower2
 } from "lucide-react";
 import { generateGhostRender } from "../utils/ghostRenderer";
 import { loadWorkspace, saveWorkspace } from "../utils/notebookStorage";
 import { undoLastStrokeAction } from "../utils/strokeHistory";
 import { renderPdfPages } from "../utils/pdfImporter";
-import { createId, flushPendingStudyEvents, getOrCreateLearnerId, pendingStudyEventCount, recordStudyEvent, requestLearnerDashboard, requestPauseAssist } from "../utils/adaptiveLearning";
+import { apiUrl, createId, flushPendingStudyEvents, getOrCreateLearnerId, pendingStudyEventCount, recordStudyEvent, requestLearnerDashboard, requestPauseAssist } from "../utils/adaptiveLearning";
 import { experimentProblemIds, experimentWorkspaceKey, parseExperimentRoute, type ExperimentRoute } from "../utils/experimentMode";
 
 export const PRESET_QUESTIONS = [
@@ -97,6 +97,22 @@ function getStudyFeedbackCondition(): "process_praise" | "neutral_summary" {
   return new URLSearchParams(window.location.search).get("studyFeedback") === "neutral"
     ? "neutral_summary"
     : "process_praise";
+}
+
+function praiseMoment(metrics?: ProcessMetrics): string {
+  if (metrics?.successful_revision_count) return "消して書き直した試行錯誤まで、ちゃんと見つけたよ";
+  if (metrics?.revision_count) return "消して見直した過程も、ここに残っているよ";
+  if (metrics?.restart_count) return "止まったあと、もう一度書き始められたね";
+  if (metrics?.stroke_count) return "最初の一画から、考えを形にできたね";
+  return "あなたの取り組みを一緒に振り返ろう";
+}
+
+function observedProcessDescription(metrics?: ProcessMetrics): string {
+  if (!metrics) return "記録された取り組みから見つけました。";
+  const actions = [metrics.stroke_count ? "筆記" : "取り組み"];
+  if (metrics.revision_count) actions.push("見直し");
+  if (metrics.restart_count) actions.push("再開");
+  return `実際に記録された${actions.join("・")}から見つけました。`;
 }
 
 function createExperimentPage(problemId: string, step: number): PageData {
@@ -286,7 +302,7 @@ const RibbonHeader = React.memo(({
             }}
           >
             <Sparkles size={15} className={isAnalyzing ? "animate-spin" : ""} />
-            {isAnalyzing ? "思考を読み解き中..." : "ほめるAIで採点！"}
+            {isAnalyzing ? "思考を読み解き中..." : "ほめるAIで振り返る"}
           </button>
         </div>
       </div>
@@ -629,7 +645,7 @@ export default function Home() {
       setActiveSectionId("sec_experiment");
       setActivePageId("experiment_page_0");
       setSelectedPreset(firstProblemId);
-      setPraiseMode("support");
+      setPraiseMode("super_praise");
       setExperimentStep(0);
       setExperimentFinished(false);
       setOptionalChosen(null);
@@ -675,7 +691,7 @@ export default function Home() {
           setActiveSectionId("sec_experiment");
           setActivePageId(page.id);
           setSelectedPreset(planned[step]);
-          setPraiseMode("support");
+          setPraiseMode("super_praise");
           setExperimentStep(step);
           setExperimentFinished(progress.finished);
           setOptionalChosen(progress.optionalChosen);
@@ -1314,17 +1330,6 @@ export default function Home() {
         model: "gemini" as const,
       };
 
-      // Next.jsプロキシのソケット切断(ECONNRESET)を回避するため直接FastAPI(ポート8000)に接続
-      const getApiUrl = () => {
-        if (process.env.NEXT_PUBLIC_API_URL) {
-          return `${process.env.NEXT_PUBLIC_API_URL}/api/analyze`;
-        }
-        if (typeof window !== "undefined") {
-          return `${window.location.protocol}//${window.location.hostname}:8000/api/analyze`;
-        }
-        return "/api/analyze";
-      };
-
       const postAnalysis = async (url: string) => {
         const controller = new AbortController();
         const timeout = window.setTimeout(() => controller.abort(), 60_000);
@@ -1340,13 +1345,7 @@ export default function Home() {
         }
       };
 
-      let response: Response;
-      try {
-        response = await postAnalysis(getApiUrl());
-      } catch (directErr) {
-        console.warn("Direct FastAPI connection failed, attempting /api/analyze fallback:", directErr);
-        response = await postAnalysis("/api/analyze");
-      }
+      const response = await postAnalysis(apiUrl("/api/analyze"));
 
       if (!response.ok) {
         let detail = "";
@@ -1477,7 +1476,7 @@ export default function Home() {
         activeSectionId: "sec_experiment",
         activePageId: `experiment_page_${nextStep}`,
         selectedPreset: problemId,
-        praiseMode: "support",
+        praiseMode: "super_praise",
         pageTransforms,
         experimentProgress: { step: nextStep, finished, optionalChosen: nextOptionalChosen },
       }, experimentWorkspaceKey(experimentConfig));
@@ -1613,28 +1612,44 @@ export default function Home() {
   return (
     <main className={`onenote-app ${isExperiment ? "experiment-app" : ""}`}>
       {isExperiment ? (
-        <header className="experiment-header">
-          <div className="experiment-heading"><span className="experiment-kicker">HomeruAI 調査体験</span><strong>{experimentStep < 3 ? `問題 ${experimentStep + 1} / 3` : "追加の問題"}</strong></div>
-          <div className="experiment-progress" aria-label={`現在の問題 ${experimentStep + 1}`}>
-            {[0, 1, 2].map(index => <span key={index} className={index <= experimentStep ? "active" : ""} />)}
+        <header className="ribbon-header experiment-ribbon">
+          <div className="onenote-header-top">
+            <div className="onenote-header-title-area">
+              <h1 className="onenote-header-title">HomeruAI Note</h1>
+              <span className="onenote-header-badge">Homeru AI Mode</span>
+              <span className="experiment-save-status" title={saveStatus === "error" ? "この端末に保存できませんでした" : "ノートはこの端末に自動保存されます"}>
+                {saveStatus === "error" ? <CloudOff size={13} /> : <Cloud size={13} />}
+                {saveStatus === "saving" ? "保存中" : saveStatus === "error" ? "保存できません" : "保存済み"}
+              </span>
+            </div>
+            <div className="experiment-header-actions">
+              <span className="experiment-current-problem">{experimentStep < 3 ? `問題 ${experimentStep + 1} / 3` : "追加の問題"} · {activePage.title}</span>
+              {!experimentLocked ? <button type="button" className="btn btn-accent experiment-analyze-button" onClick={handleAnalyze} disabled={isAnalyzing || activePage.strokes.length === 0}>
+                <Sparkles size={16} />{isAnalyzing ? "思考を読み解き中..." : experimentConfig?.feedbackCondition === "neutral_summary" ? "振り返る" : "ほめるAIで振り返る"}
+              </button> : activePage.thoughtTypeBadge ? <button type="button" className="btn btn-accent experiment-analyze-button" onClick={() => setShowPraiseModal(true)} disabled={isTransitioning}>
+                <Sparkles size={16} />振り返りを見る
+              </button> : null}
+            </div>
           </div>
-          <div className="experiment-actions" role="toolbar" aria-label="ノートの操作">
-            {!experimentLocked && <>
-              <button type="button" className={tool === "pen" ? "selected" : ""} onClick={() => setTool("pen")} aria-pressed={tool === "pen"}>ペン</button>
-              <button type="button" className={tool === "eraser" ? "selected" : ""} onClick={() => setTool("eraser")} aria-pressed={tool === "eraser"}>消しゴム</button>
-              <button type="button" onClick={handleUndo} disabled={activePage.strokes.length === 0}>1つ戻す</button>
-              <button type="button" className="primary" onClick={handleAnalyze} disabled={isAnalyzing || activePage.strokes.length === 0}>{isAnalyzing ? "分析中…" : "振り返る"}</button>
-              <button type="button" onClick={() => { void skipExperimentTrial(); }} disabled={isAnalyzing || isTransitioning}>書けないまま次へ</button>
-            </>}
-            {experimentLocked && <>
-              {activePage.thoughtTypeBadge && <button type="button" onClick={() => setShowPraiseModal(true)} disabled={isTransitioning}>振り返りを見る</button>}
-              {experimentStep < 2 && <button type="button" className="primary" onClick={() => { void advanceExperiment(); }} disabled={isTransitioning}>{isTransitioning ? "保存中…" : "次の問題へ"}</button>}
-              {experimentStep === 2 && <>
-                <button type="button" onClick={() => { void finishExperiment(false); }} disabled={isTransitioning}>ここで終了</button>
-                <button type="button" className="primary" onClick={() => { void finishExperiment(true); }} disabled={isTransitioning}>追加の1問を解く</button>
-              </>}
-              {experimentStep === 3 && <button type="button" className="primary" onClick={() => { void finishExperiment(true); }} disabled={isTransitioning}>体験を終了</button>}
-            </>}
+          <div className="ribbon-tabs"><span className="ribbon-tab active">描画</span></div>
+          <div className="ribbon-content experiment-ribbon-content" role="toolbar" aria-label="ノートの描画操作">
+            <div className="ribbon-group">
+              <button type="button" className={`btn ${tool === "pen" ? "btn-active" : ""}`} onClick={() => setTool("pen")} disabled={experimentLocked} aria-pressed={tool === "pen"}><PenTool size={15} />ペン</button>
+              <button type="button" className={`btn ${tool === "eraser" ? "btn-active" : ""}`} onClick={() => setTool("eraser")} disabled={experimentLocked} aria-pressed={tool === "eraser"}><Eraser size={15} />消しゴム</button>
+              <button type="button" className="btn" onClick={handleUndo} disabled={experimentLocked || activePage.strokes.length === 0}><Undo2 size={15} />元に戻す</button>
+              <button type="button" className="btn" onClick={handleResetTransform}><Maximize2 size={15} />等倍</button>
+            </div>
+            {tool === "pen" ? <>
+              <div className="ribbon-group experiment-color-group" aria-label="ペンの色">
+                <div className="color-picker-grid" style={{ gridTemplateColumns: "repeat(5, 1fr)" }}>
+                  {colors.map(color => <button type="button" key={color.value} onClick={() => setBrushColor(color.value)} disabled={experimentLocked} className={`color-dot ${brushColor === color.value ? "active" : ""} ${color.value === "#ffffff" ? "color-dot-white" : ""}`} style={{ backgroundColor: color.value }} title={color.label} aria-label={`${color.label}のペン`} />)}
+                </div>
+              </div>
+              <label className="experiment-tool-setting">ペンの太さ <input type="range" min="2" max="15" value={brushWidth} onChange={event => setBrushWidth(Number(event.target.value))} disabled={experimentLocked} /><span>{brushWidth}px</span></label>
+            </> : <div className="experiment-tool-settings">
+              <label>消しゴム <select value={eraserMode} onChange={event => setEraserMode(event.target.value as "stroke" | "pixel")} disabled={experimentLocked}><option value="stroke">一筆消し</option><option value="pixel">部分消し</option></select></label>
+              <label>太さ <input type="range" min="10" max="80" value={eraserWidth} onChange={event => setEraserWidth(Number(event.target.value))} disabled={experimentLocked} /><span>{eraserWidth}px</span></label>
+            </div>}
           </div>
         </header>
       ) : <RibbonHeader
@@ -1660,8 +1675,23 @@ export default function Home() {
         praiseMode={praiseMode} setPraiseMode={setPraiseMode}
         handleUndo={handleUndo} saveStatus={saveStatus}
       />}
-      {isExperiment ? <section className="experiment-guide" aria-live="polite">
-        {activePage.skippedAt ? "この問題は筆記・振り返りなしで記録しました。上のボタンから次へ進めます。" : experimentLocked ? "振り返りを確認したら、上のボタンから次へ進んでください。" : "Apple Pencilかマウスで下のノートに書いてください。途中まででも大丈夫です。書いたら「振り返る」を押してください。書き始められない場合も記録して進めます。"}
+      {isExperiment ? <section className="motivation-bar experiment-motivation-bar" aria-label="調査の進行状況">
+        <div className="motivation-message">
+          <span>{experimentConfig?.feedbackCondition === "neutral_summary" ? "今回の取り組み" : "今日もノートを開けたね"}</span>
+          <strong>{experimentConfig?.feedbackCondition === "neutral_summary" ? `${activePage.strokes.filter(stroke => stroke.type === "draw").length}本の筆記を記録中` : activePage.strokes.some(stroke => stroke.type === "draw") ? `${activePage.strokes.filter(stroke => stroke.type === "draw").length}本の一歩を記録中` : "まず一画から始めよう"}</strong>
+        </div>
+        <div className="compact-level experiment-level">
+          <div className="compact-level-label">{experimentStep < 3 ? `問題 ${experimentStep + 1} / 3` : "追加の問題"}</div>
+          <div className="compact-xp"><div style={{ width: `${Math.min(100, (experimentStep + 1) / 3 * 100)}%` }} /></div>
+        </div>
+        <div className="experiment-actions" role="group" aria-label="次のステップ">
+          {!experimentLocked && <button type="button" onClick={() => { void skipExperimentTrial(); }} disabled={isAnalyzing || isTransitioning}>書けないまま次へ</button>}
+          {experimentLocked && <>
+            {experimentStep < 2 && <button type="button" className="primary" onClick={() => { void advanceExperiment(); }} disabled={isTransitioning}>{isTransitioning ? "保存中…" : "次の問題へ"}</button>}
+            {experimentStep === 2 && <><button type="button" onClick={() => { void finishExperiment(false); }} disabled={isTransitioning}>ここで終了</button><button type="button" className="primary" onClick={() => { void finishExperiment(true); }} disabled={isTransitioning}>追加の1問を解く</button></>}
+            {experimentStep === 3 && <button type="button" className="primary" onClick={() => { void finishExperiment(true); }} disabled={isTransitioning}>体験を終了</button>}
+          </>}
+        </div>
       </section> : <section className="motivation-bar" aria-label="今日の学習状況">
         <div className="motivation-message">
           <span>今日もノートを開けたね</span>
@@ -1675,12 +1705,22 @@ export default function Home() {
         <button className="dashboard-button" onClick={() => { setShowDashboard(true); void refreshDashboard(true); }}><BarChart3 size={18} />成長を見る</button>
         <button className={`debug-button ${showDebug ? "active" : ""}`} onClick={() => setShowDebug(value => !value)} title="研究者向けデバッグ表示"><Bug size={17} />Debug</button>
       </section>}
+      {isExperiment && <section className="experiment-guide" aria-live="polite">
+        {activePage.skippedAt ? "この問題は筆記なしで記録しました。次の問題へ進めます。" : experimentLocked ? activePage.feedbackCondition === "neutral_summary" ? "振り返りを確認したら、次へ進んでください。" : "ノートの花丸も見られます。準備ができたら次へ進んでください。" : "下のノートに書いてください。途中まででも大丈夫。書いたら右上の「振り返る」を押します。"}
+      </section>}
       {!isExperiment && showDashboard && <LearningDashboard data={dashboard} loading={dashboardLoading} onClose={() => setShowDashboard(false)} />}
       <div className="onenote-container">
-        {!isExperiment && <Sidebar sections={sections} activeSectionId={activeSectionId} activePageId={activePageId} handleSectionSwitch={handleSectionSwitch} handlePageSwitch={handlePageSwitch} handleAddSection={handleAddSection} handleAddPage={handleAddPage} />}
+        {isExperiment ? <>
+          <aside className="section-sidebar experiment-section-sidebar" aria-label="調査ノート"><div className="sidebar-add-btn">固定のノート</div><ul className="sidebar-list"><li className="section-item active">調査ノート</li></ul></aside>
+          <aside className="page-sidebar experiment-page-sidebar" aria-label="問題の進行"><div className="sidebar-add-btn">出題順</div><ul className="sidebar-list">
+            {[0, 1, 2, ...(optionalChosen ? [3] : [])].map(index => <li key={index} className={`page-item ${index === experimentStep ? "active" : ""}`} aria-current={index === experimentStep ? "step" : undefined}>
+              <span className="page-item-title">{index < 3 ? `問題 ${index + 1}` : "追加の問題"}</span><span className="page-item-date">{index < experimentStep ? "完了" : index === experimentStep ? activePage.title : "このあと"}</span>
+            </li>)}
+          </ul></aside>
+        </> : <Sidebar sections={sections} activeSectionId={activeSectionId} activePageId={activePageId} handleSectionSwitch={handleSectionSwitch} handlePageSwitch={handlePageSwitch} handleAddSection={handleAddSection} handleAddPage={handleAddPage} />}
         <div className="canvas-main-area">
           <div className="canvas-header">
-            {isExperiment ? <><h1 className="experiment-problem-title">{activePage.title}</h1><span className="experiment-problem-subtitle">この問題をノートに解いてみましょう</span></> : <><input type="text" value={activePage.title} onChange={e => updateActivePage(p => ({ ...p, title: e.target.value }))} className="canvas-title-input" placeholder="無題のページ" /><div className="canvas-date-label">{activePage.date}</div></>}
+            {isExperiment ? <><h1 className="canvas-title-input experiment-canvas-title">{activePage.title}</h1><div className="canvas-date-label">この問題をノートに解いてみましょう</div></> : <><input type="text" value={activePage.title} onChange={e => updateActivePage(p => ({ ...p, title: e.target.value }))} className="canvas-title-input" placeholder="無題のページ" /><div className="canvas-date-label">{activePage.date}</div></>}
           </div>
 <div className="canvas-body" style={{ display: "flex", flexDirection: "row", width: "100%", height: "100%", overflow: "hidden" }}>
   <div style={{ flex: 1, position: "relative", width: "100%", height: "100%" }}>
@@ -1689,7 +1729,7 @@ export default function Home() {
                 strokes={isReplaying ? replayedStrokes : activePage.strokes} setStrokes={setStrokesForActivePage}
                 images={activePage.images} setImages={setImagesForActivePage}
                 texts={activePage.texts} setTexts={setTextsForActivePage}
-                aiAnnotations={isExperiment ? [] : activePage.aiAnnotations}
+                aiAnnotations={activePage.feedbackCondition === "neutral_summary" ? [] : activePage.aiAnnotations}
                 tool={tool} eraserMode={eraserMode} brushColor={brushColor} brushWidth={brushWidth} eraserWidth={eraserWidth} textStyle={textStyle}
                 isReplaying={isReplaying || experimentLocked} initialPan={pageTransforms[activePageId]?.pan || { x: 0, y: 0 }} initialZoom={pageTransforms[activePageId]?.zoom || 1}
                 onTransformChange={(newPan, newZoom) => { setPageTransforms(previous => ({ ...previous, [activePageId]: { pan: newPan, zoom: newZoom } })); }}
@@ -1815,7 +1855,7 @@ export default function Home() {
 
               {/* 🌟 ほめる先生の称賛ポップアップカード（モーダル） */}
               {showPraiseModal && (activePage.thoughtTypeBadge || activePage.aiSummary) && (
-                <ModalLayer title={isExperiment ? "今回の振り返り" : "ほめるAIの振り返り"} onClose={() => setShowPraiseModal(false)}>
+                <ModalLayer title={activePage.feedbackCondition === "neutral_summary" ? "今回の記録" : "ほめるAIの振り返り"} onClose={() => setShowPraiseModal(false)}>
                   <div style={{
                     backgroundColor: "#ffffff",
                     borderRadius: "24px",
@@ -1833,9 +1873,9 @@ export default function Home() {
                     <button
                       onClick={() => setShowPraiseModal(false)}
                       style={{
-                        position: "absolute", top: "18px", right: "18px",
+                        position: "absolute", top: "14px", right: "14px",
                         background: "#f1f5f9", border: "none", borderRadius: "50%",
-                        width: "36px", height: "36px", cursor: "pointer",
+                        width: "44px", height: "44px", cursor: "pointer",
                         display: "flex", justifyContent: "center", alignItems: "center",
                         color: "#64748b"
                       }}
@@ -1847,11 +1887,11 @@ export default function Home() {
                     <div style={{ textAlign: "center", display: "flex", flexDirection: "column", alignItems: "center", gap: "8px" }}>
                       <div style={{
                         display: "inline-flex", alignItems: "center", gap: "6px",
-                        background: isExperiment ? "#f5f3ff" : activePage.feedbackCondition === "neutral_summary" ? "#f1f5f9" : "linear-gradient(135deg, #fef3c7 0%, #fde68a 100%)",
-                        color: isExperiment ? "#5b21b6" : activePage.feedbackCondition === "neutral_summary" ? "#475569" : "#b45309", padding: "6px 16px", borderRadius: "9999px",
-                        fontWeight: "bold", fontSize: "14px", border: isExperiment ? "1px solid #ddd6fe" : activePage.feedbackCondition === "neutral_summary" ? "1px solid #cbd5e1" : "1px solid #fcd34d"
+                        background: activePage.feedbackCondition === "neutral_summary" ? "#f1f5f9" : "linear-gradient(135deg, #fef3c7 0%, #fde68a 100%)",
+                        color: activePage.feedbackCondition === "neutral_summary" ? "#475569" : "#b45309", padding: "6px 16px", borderRadius: "9999px",
+                        fontWeight: "bold", fontSize: "14px", border: activePage.feedbackCondition === "neutral_summary" ? "1px solid #cbd5e1" : "1px solid #fcd34d"
                       }}>
-                        {isExperiment || activePage.feedbackCondition === "neutral_summary" ? <FileText size={18} /> : <Award size={18} />}
+                        {activePage.feedbackCondition === "neutral_summary" ? <FileText size={18} /> : <Award size={18} />}
                         {activePage.feedbackCondition === "neutral_summary" ? "今回の記録" : "今回見えた学び方"}
                       </div>
 
@@ -1864,9 +1904,14 @@ export default function Home() {
                       <p style={{ margin: 0, fontSize: "13px", color: "#64748b" }}>
                         {activePage.feedbackCondition === "neutral_summary"
                           ? "今回の筆記と見直しの記録です。"
-                          : "実際に記録された筆記・見直し・再開から見つけました。"}
+                          : observedProcessDescription(activePage.processMetrics)}
                       </p>
                     </div>
+
+                    {activePage.feedbackCondition !== "neutral_summary" && <div className="praise-celebration" aria-label="記録から見つけた一歩">
+                      <span className="praise-celebration-icon" aria-hidden="true"><Flower2 size={36} /></span>
+                      <div><span className="praise-celebration-kicker">あなたの過程を見つけたよ</span><strong>{praiseMoment(activePage.processMetrics)}</strong></div>
+                    </div>}
 
                     {/* 称賛ポイント3選 */}
                     {activePage.analysisNotice && (
@@ -1915,16 +1960,16 @@ export default function Home() {
                     {activePage.praisePoints && activePage.praisePoints.length > 0 && (
                       <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
                         <div style={{ fontSize: "14px", fontWeight: "bold", color: "#334155", display: "flex", alignItems: "center", gap: "6px" }}>
-                          {isExperiment || activePage.feedbackCondition === "neutral_summary" ? <FileText size={16} color="#64748b" /> : <Sparkle size={16} color="#eab308" />}
+                          {activePage.feedbackCondition === "neutral_summary" ? <FileText size={16} color="#64748b" /> : <Sparkle size={16} color="#eab308" />}
                           {activePage.feedbackCondition === "neutral_summary" ? "記録された内容" : "取り組みの中で見つけた良かったところ"}
                         </div>
                         {activePage.praisePoints.map((point, idx) => (
                           <div key={idx} style={{
                             display: "flex", alignItems: "flex-start", gap: "12px",
-                            backgroundColor: "#f8fafc", padding: "12px 16px", borderRadius: "12px",
-                            border: "1px solid #e2e8f0"
+                            backgroundColor: activePage.feedbackCondition === "neutral_summary" ? "#f8fafc" : "#fffbeb", padding: "12px 16px", borderRadius: "12px",
+                            border: activePage.feedbackCondition === "neutral_summary" ? "1px solid #e2e8f0" : "1px solid #fde68a"
                           }}>
-                            {isExperiment || activePage.feedbackCondition === "neutral_summary" ? <FileText size={20} color="#64748b" style={{ flexShrink: 0, marginTop: "2px" }} /> : <CheckCircle2 size={20} color="#10b981" style={{ flexShrink: 0, marginTop: "2px" }} />}
+                            {activePage.feedbackCondition === "neutral_summary" ? <FileText size={20} color="#64748b" style={{ flexShrink: 0, marginTop: "2px" }} /> : <Sparkles size={20} color="#d97706" style={{ flexShrink: 0, marginTop: "2px" }} />}
                             <span style={{ fontSize: "14px", color: "#1e293b", lineHeight: "1.5", fontWeight: "500" }}>
                               {point}
                             </span>
@@ -1936,8 +1981,8 @@ export default function Home() {
                     {/* 先生からの温かいメッセージ */}
                     {(activePage.encouragementMessage || activePage.aiSummary) && (
                       <div style={{
-                        backgroundColor: isExperiment ? "#f8fafc" : activePage.feedbackCondition === "neutral_summary" ? "#f8fafc" : "#f5f3ff", padding: "18px 20px", borderRadius: "16px",
-                        border: isExperiment ? "1.5px solid #cbd5e1" : activePage.feedbackCondition === "neutral_summary" ? "1.5px solid #cbd5e1" : "1.5px solid #ddd6fe", display: "flex", flexDirection: "column", gap: "8px"
+                        backgroundColor: activePage.feedbackCondition === "neutral_summary" ? "#f8fafc" : "#f5f3ff", padding: "18px 20px", borderRadius: "16px",
+                        border: activePage.feedbackCondition === "neutral_summary" ? "1.5px solid #cbd5e1" : "1.5px solid #ddd6fe", display: "flex", flexDirection: "column", gap: "8px"
                       }}>
                         <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "#5c2d91", fontWeight: "bold", fontSize: "15px" }}>
                           <Bot size={20} />
@@ -1998,9 +2043,10 @@ export default function Home() {
                       </button>
                     )}
 
-                    {/* ボタン */}
-                    {!isExperiment ? <button
+                    {/* 両モードともノートへ戻ってから次へ進む。称賛群では花丸も目に入る。 */}
+                    <button
                       onClick={() => setShowPraiseModal(false)}
+                      className="praise-return-button"
                       style={{
                         backgroundColor: "#5c2d91", color: "#ffffff", border: "none",
                         padding: "14px 20px", borderRadius: "12px", fontSize: "16px",
@@ -2009,11 +2055,8 @@ export default function Home() {
                       }}
                     >
                       {activePage.feedbackCondition === "neutral_summary" ? "ノートに戻る" : "💮 ノートの花丸と赤ペンを見る！"}
-                    </button> : <><div className="experiment-modal-actions">
-                      {experimentStep < 2 && <button className="primary" type="button" onClick={() => { void advanceExperiment(); }} disabled={isTransitioning}>{isTransitioning ? "保存中…" : "次の問題へ"}</button>}
-                      {experimentStep === 2 && <><button type="button" onClick={() => { void finishExperiment(false); }} disabled={isTransitioning}>ここで終了</button><button className="primary" type="button" onClick={() => { void finishExperiment(true); }} disabled={isTransitioning}>追加の1問を解く</button></>}
-                      {experimentStep === 3 && <button className="primary" type="button" onClick={() => { void finishExperiment(true); }} disabled={isTransitioning}>体験を終了</button>}
-                    </div>{analysisError && <p role="alert" className="experiment-save-error">{analysisError}</p>}</>}
+                    </button>
+                    {isExperiment && analysisError && <p role="alert" className="experiment-save-error">{analysisError}</p>}
                   </div>
                 </ModalLayer>
               )}

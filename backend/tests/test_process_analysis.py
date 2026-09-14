@@ -86,6 +86,20 @@ class ProcessAnalysisTests(unittest.TestCase):
         self.assertNotIn("タイプ", response.thought_type_badge)
         self.assertIn("書き直", text)
 
+    def test_single_stroke_praise_does_not_invent_revision_or_restart(self):
+        response = build_local_fallback(
+            [stroke("s1", 1_000, 2_000)],
+            "一次方程式",
+            "super_praise",
+            [],
+            "テスト",
+        )
+
+        self.assertIn("一画", response.encouragement_message)
+        self.assertNotIn("消して", response.encouragement_message)
+        self.assertNotIn("止まったあと", response.encouragement_message)
+        self.assertNotIn("筆跡を重ねた", " ".join(response.praise_points))
+
     def test_overnight_gap_is_not_misclassified_as_thinking(self):
         next_day = [
             stroke("s1", 1_000, 2_000),
