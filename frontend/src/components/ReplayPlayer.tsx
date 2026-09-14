@@ -1,25 +1,23 @@
 "use client";
 
-import React, { useEffect, useState, useRef, useCallback } from "react";
+import React, { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import { Stroke } from "../types/canvas";
-import { Play, Pause, RotateCcw, FastForward } from "lucide-react";
+import { Play, Pause, RotateCcw } from "lucide-react";
 
 interface ReplayPlayerProps {
   strokes: Stroke[];
-  isReplaying: boolean;
   setIsReplaying: (replaying: boolean) => void;
   setReplayedStrokes: (strokes: Stroke[]) => void;
 }
 
 export default function ReplayPlayer({
   strokes,
-  isReplaying,
   setIsReplaying,
   setReplayedStrokes,
 }: ReplayPlayerProps) {
+
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0); 
-  const [totalDuration, setTotalDuration] = useState(0); 
   const [speed, setSpeed] = useState<number>(1); 
 
   const animationFrameRef = useRef<number | null>(null);
@@ -44,13 +42,7 @@ export default function ReplayPlayer({
     return { minTime, maxTime, duration };
   }, [strokes]);
 
-  useEffect(() => {
-    const { duration } = getTimelineRange();
-    setTotalDuration(duration);
-    setCurrentTime(0);
-    setIsPlaying(false);
-    setIsReplaying(false);
-  }, [strokes, getTimelineRange, setIsReplaying]);
+  const totalDuration = useMemo(() => getTimelineRange().duration, [getTimelineRange]);
 
   const updateReplayedStrokes = useCallback(
     (timeMs: number) => {
@@ -100,6 +92,8 @@ export default function ReplayPlayer({
     updateReplayedStrokes(currentTime);
   }, [currentTime, updateReplayedStrokes]);
 
+  const animateRef = useRef<(timestamp: number) => void>(() => {});
+
   const animate = useCallback(
     (timestamp: number) => {
       if (!lastTimeRef.current) {
@@ -110,31 +104,30 @@ export default function ReplayPlayer({
 
       setCurrentTime((prevTime) => {
         const nextTime = prevTime + delta * speed;
-        return Math.min(nextTime, totalDuration);
+        if (nextTime >= totalDuration) {
+          setIsPlaying(false);
+          setIsReplaying(false);
+          return totalDuration;
+        }
+        return nextTime;
       });
 
       if (isPlaying) {
-        animationFrameRef.current = requestAnimationFrame(animate);
+        animationFrameRef.current = requestAnimationFrame((ts) => animateRef.current(ts));
       }
     },
-    [isPlaying, speed, totalDuration]
+    [isPlaying, speed, totalDuration, setIsReplaying]
   );
 
   useEffect(() => {
-    if (isPlaying && currentTime >= totalDuration && totalDuration > 0) {
-      setIsPlaying(false);
-      setIsReplaying(false);
-      if (animationFrameRef.current) {
-        cancelAnimationFrame(animationFrameRef.current);
-      }
-    }
-  }, [currentTime, totalDuration, isPlaying, setIsReplaying]);
+    animateRef.current = animate;
+  }, [animate]);
 
   useEffect(() => {
     if (isPlaying) {
       setIsReplaying(true);
       lastTimeRef.current = null;
-      animationFrameRef.current = requestAnimationFrame(animate);
+      animationFrameRef.current = requestAnimationFrame((ts) => animateRef.current(ts));
     } else {
       if (animationFrameRef.current) {
         cancelAnimationFrame(animationFrameRef.current);
@@ -146,7 +139,8 @@ export default function ReplayPlayer({
         cancelAnimationFrame(animationFrameRef.current);
       }
     };
-  }, [isPlaying, animate, setIsReplaying]);
+  }, [isPlaying, setIsReplaying]);
+
 
   const togglePlay = () => {
     if (strokes.length === 0) return;

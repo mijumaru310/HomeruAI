@@ -2,7 +2,8 @@
 
 import React, { useRef, useEffect, useState, useCallback } from "react";
 import { getStroke } from "perfect-freehand";
-import { Stroke, CanvasImage, CanvasText, AIAnnotation } from "../types/canvas";
+import { Stroke, CanvasImage, CanvasText, AIAnnotation, PointerDiagnostics } from "../types/canvas";
+import { undoLastStrokeAction } from "../utils/strokeHistory";
 
 interface CanvasProps {
   strokes: Stroke[];
@@ -31,6 +32,7 @@ interface CanvasProps {
   initialPan: { x: number; y: number };
   initialZoom: number;
   onTransformChange?: (pan: { x: number; y: number }, zoom: number) => void;
+  onPointerDiagnostics?: (diagnostics: PointerDiagnostics) => void;
 }
 
 const isPointInPolygon = (point: { x: number; y: number }, polygon: { x: number; y: number }[]): boolean => {
@@ -53,7 +55,7 @@ export default function Canvas({
   tool, eraserMode,
   brushColor, brushWidth, eraserWidth,
   textStyle,
-  isReplaying, initialPan, initialZoom, onTransformChange,
+  isReplaying, initialPan, initialZoom, onTransformChange, onPointerDiagnostics,
 }: CanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -62,34 +64,39 @@ export default function Canvas({
 
   const panRef = useRef({ x: initialPan.x, y: initialPan.y });
   const zoomRef = useRef(initialZoom);
-  const prevInitialPanRef = useRef(initialPan);
-  const prevInitialZoomRef = useRef(initialZoom);
-  
-  if (initialPan.x !== prevInitialPanRef.current.x || initialPan.y !== prevInitialPanRef.current.y || initialZoom !== prevInitialZoomRef.current) {
+
+  useEffect(() => {
     panRef.current = { x: initialPan.x, y: initialPan.y };
     zoomRef.current = initialZoom;
-    prevInitialPanRef.current = initialPan;
-    prevInitialZoomRef.current = initialZoom;
-  }
+  }, [initialPan.x, initialPan.y, initialZoom]);
 
   const currentStrokeRef = useRef<Stroke | null>(null);
   const isDrawingRef = useRef(false);
   const pointerPosRef = useRef<{ x: number; y: number } | null>(null);
 
-  const toolRef = useRef(tool); toolRef.current = tool;
-  const brushColorRef = useRef(brushColor); brushColorRef.current = brushColor;
-  const brushWidthRef = useRef(brushWidth); brushWidthRef.current = brushWidth;
-  const eraserModeRef = useRef(eraserMode); eraserModeRef.current = eraserMode;
-  const eraserWidthRef = useRef(eraserWidth); eraserWidthRef.current = eraserWidth;
-  const isReplayingRef = useRef(isReplaying); isReplayingRef.current = isReplaying;
-  
-  const strokesRef = useRef(strokes); 
-  useEffect(() => { strokesRef.current = strokes; requestDraw(); }, [strokes]);
-  
-  const imagesRef = useRef(images); imagesRef.current = images;
-  const textsRef = useRef(texts); textsRef.current = texts;
-  const textStyleRef = useRef(textStyle); textStyleRef.current = textStyle;
-  const aiAnnotationsRef = useRef(aiAnnotations || []); aiAnnotationsRef.current = aiAnnotations || [];
+  const toolRef = useRef(tool);
+  const brushColorRef = useRef(brushColor);
+  const brushWidthRef = useRef(brushWidth);
+  const eraserModeRef = useRef(eraserMode);
+  const eraserWidthRef = useRef(eraserWidth);
+  const isReplayingRef = useRef(isReplaying);
+  const strokesRef = useRef(strokes);
+  const imagesRef = useRef(images);
+  const textsRef = useRef(texts);
+  const textStyleRef = useRef(textStyle);
+  const aiAnnotationsRef = useRef(aiAnnotations || []);
+
+  useEffect(() => {
+    toolRef.current = tool;
+    brushColorRef.current = brushColor;
+    brushWidthRef.current = brushWidth;
+    eraserModeRef.current = eraserMode;
+    eraserWidthRef.current = eraserWidth;
+    isReplayingRef.current = isReplaying;
+    textsRef.current = texts;
+    textStyleRef.current = textStyle;
+    aiAnnotationsRef.current = aiAnnotations || [];
+  }, [tool, brushColor, brushWidth, eraserMode, eraserWidth, isReplaying, texts, textStyle, aiAnnotations]);
 
   const imageCacheRef = useRef<Map<string, HTMLImageElement>>(new Map());
   const [textInput, setTextInput] = useState<{ id: string | null; text: string; worldX: number; worldY: number; } | null>(null);
@@ -112,6 +119,9 @@ export default function Canvas({
   const isPanningRef = useRef(false);
   const lastPanPosRef = useRef<{ x: number; y: number } | null>(null);
   const activePointerIdRef = useRef<number | null>(null);
+  const activeDrawingPointerTypeRef = useRef<string | null>(null);
+  const ignoredPalmTouchesRef = useRef(0);
+  const lastDiagnosticsAtRef = useRef(0);
   
   const spacePressedRef = useRef(false);
   const rafIdRef = useRef<number | null>(null);
@@ -126,10 +136,23 @@ export default function Canvas({
     y: (sy - rect.top - panRef.current.y) / zoomRef.current,
   });
 
-  const worldToContainer = (wx: number, wy: number) => ({
-    x: wx * zoomRef.current + panRef.current.x,
-    y: wy * zoomRef.current + panRef.current.y,
-  });
+  const reportPointer = (event: PointerEvent | React.PointerEvent<HTMLCanvasElement>, coalescedSamples = 1, force = false) => {
+    if (!onPointerDiagnostics) return;
+    const now = Date.now();
+    if (!force && now - lastDiagnosticsAtRef.current < 80) return;
+    lastDiagnosticsAtRef.current = now;
+    onPointerDiagnostics({
+      pointerType: event.pointerType === "pen" || event.pointerType === "touch" || event.pointerType === "mouse" ? event.pointerType : "unknown",
+      pressure: Number.isFinite(event.pressure) ? event.pressure : 0,
+      tiltX: Number.isFinite(event.tiltX) ? event.tiltX : 0,
+      tiltY: Number.isFinite(event.tiltY) ? event.tiltY : 0,
+      width: Number.isFinite(event.width) ? event.width : 0,
+      height: Number.isFinite(event.height) ? event.height : 0,
+      coalescedSamples,
+      palmTouchesIgnored: ignoredPalmTouchesRef.current,
+      updatedAt: now,
+    });
+  };
 
   // 🌟 キーボードショートカット（Undo / Space移動）
   useEffect(() => {
@@ -144,33 +167,7 @@ export default function Canvas({
       // Undo: Ctrl+Z (Windows) / Cmd+Z (Mac/iPad)
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
         e.preventDefault();
-        setStrokes(prev => {
-          let latestTime = 0;
-          let actionType: "draw" | "erase" = "draw";
-          let latestStrokeId = "";
-          
-          prev.forEach(s => {
-            if (!s.isErased && s.endTime > latestTime) {
-              latestTime = s.endTime;
-              actionType = "draw";
-              latestStrokeId = s.strokeId;
-            }
-            if (s.isErased && s.erasedAt && s.erasedAt > latestTime) {
-              latestTime = s.erasedAt;
-              actionType = "erase";
-            }
-          });
-
-          if (latestTime === 0) return prev;
-
-          if (actionType === "draw") {
-            // 書いたものを戻す（AIログには消去痕跡として残る！）
-            return prev.map(s => s.strokeId === latestStrokeId ? { ...s, isErased: true, erasedAt: Date.now() } : s);
-          } else {
-            // 消したものを戻す
-            return prev.map(s => s.erasedAt === latestTime ? { ...s, isErased: false, erasedAt: undefined } : s);
-          }
-        });
+        setStrokes(previous => undoLastStrokeAction(previous));
       }
     };
 
@@ -186,7 +183,10 @@ export default function Canvas({
     };
   }, [setStrokes]);
 
-  useEffect(() => { setDpr(window.devicePixelRatio || 1); }, []);
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => setDpr(window.devicePixelRatio || 1));
+    return () => window.cancelAnimationFrame(frame);
+  }, []);
 
   useEffect(() => {
     const el = containerRef.current; if (!el) return;
@@ -196,16 +196,7 @@ export default function Canvas({
     return () => { el.removeEventListener("touchstart", blockTouch); el.removeEventListener("touchmove", blockTouch); };
   }, []);
 
-  useEffect(() => {
-    images.forEach(img => {
-      if (!imageCacheRef.current.has(img.id)) {
-        const el = new Image(); el.src = img.url;
-        el.onload = () => { imageCacheRef.current.set(img.id, el); requestDraw(); };
-      }
-    });
-  }, [images]);
-
-  const drawImmediate = () => {
+  const drawImmediate = useCallback(() => {
     const canvas = canvasRef.current; if (!canvas || dimensions.width === 0) return;
     const ctx = canvas.getContext("2d"); if (!ctx) return;
 
@@ -266,6 +257,7 @@ export default function Canvas({
       offCtx.setTransform(zoom * currentDpr, 0, 0, zoom * currentDpr, pan.x * currentDpr, pan.y * currentDpr);
       const renderStroke = (stroke: Stroke, isCurrentStroke = false) => {
         if (!stroke || !stroke.points || !Array.isArray(stroke.points)) return;
+        if (stroke.isErased) return;
         if (stroke.type === "erase" || stroke.type === "pixel-erase") {
           if (stroke.type === "pixel-erase") {
             const pts = stroke.points.map(p => [p.x, p.y, p.p] as [number, number, number]);
@@ -278,7 +270,6 @@ export default function Canvas({
           }
           return;
         }
-        if (stroke.isErased) return;
         const isSel = !isCurrentStroke && selectedIdsRef.current.strokes.includes(stroke.strokeId);
         const dx = isSel ? offset.x : 0; const dy = isSel ? offset.y : 0;
         const pts = stroke.points.map(p => [p.x + dx, p.y + dy, p.p] as [number, number, number]);
@@ -322,20 +313,71 @@ export default function Canvas({
       }
     });
 
-    const annotations = aiAnnotationsRef.current;
+    // Older saved pages may contain the same AI evidence more than once. Draw each
+    // piece of evidence only once so circles/stamps never pile up visually.
+    const seenAnnotations = new Set<string>();
+    const annotations = aiAnnotationsRef.current.filter((annotation) => {
+      const key = annotation.evidenceId
+        ? `evidence:${annotation.evidenceId}`
+        : `${annotation.type}:${annotation.imageId}:${annotation.box_2d.join(",")}`;
+      if (seenAnnotations.has(key)) return false;
+      seenAnnotations.add(key);
+      return true;
+    });
     if (annotations.length > 0) {
       annotations.forEach(ann => {
-        const img = imagesRef.current.find(im => im.id === ann.imageId); if (!img) return;
-        const isSel = selectedIdsRef.current.images.includes(img.id);
-        const imgX = img.x + (isSel ? offset.x : 0); const imgY = img.y + (isSel ? offset.y : 0);
+        const img = imagesRef.current.find(im => im.id === ann.imageId) || imagesRef.current[0];
+        let imgX = 0, imgY = 0, imgWidth = dimensions.width, imgHeight = dimensions.height;
+        if (img) {
+          const isSel = selectedIdsRef.current.images.includes(img.id);
+          imgX = img.x + (isSel ? offset.x : 0);
+          imgY = img.y + (isSel ? offset.y : 0);
+          imgWidth = img.width;
+          imgHeight = img.height;
+        } else if (ann.virtualBounds) {
+          imgX = ann.virtualBounds.x;
+          imgY = ann.virtualBounds.y;
+          imgWidth = ann.virtualBounds.width;
+          imgHeight = ann.virtualBounds.height;
+        }
+
         const [ymin, xmin, ymax, xmax] = ann.box_2d;
-        const x1 = imgX + (xmin / 1000) * img.width; const y1 = imgY + (ymin / 1000) * img.height;
-        const x2 = imgX + (xmax / 1000) * img.width; const y2 = imgY + (ymax / 1000) * img.height;
+        const x1 = imgX + (xmin / 1000) * imgWidth; const y1 = imgY + (ymin / 1000) * imgHeight;
+        const x2 = imgX + (xmax / 1000) * imgWidth; const y2 = imgY + (ymax / 1000) * imgHeight;
         const color = ann.color || (ann.type === "circle" ? "#107c41" : "#e81123");
 
         const fontName = 'var(--font-yomogi), "Yomogi", "Zen Kurenaido", cursive, sans-serif';
 
-        if (ann.type === "circle") {
+        if (ann.type === "stamp") {
+          const cx = (x1 + x2) / 2; const cy = (y1 + y2) / 2;
+          const radius = Math.max(Math.abs(x2 - x1) / 2, Math.abs(y2 - y1) / 2, 45);
+
+          ctx.save();
+          ctx.strokeStyle = "#e81123";
+          ctx.lineWidth = 3.5 / zoom;
+          ctx.lineCap = "round";
+          ctx.lineJoin = "round";
+
+          // 日本の伝統的な「花丸（はなまる）」を描画
+          ctx.beginPath();
+          const petals = 6;
+          for (let a = 0; a <= Math.PI * 2 + 0.2; a += 0.04) {
+            const r = radius * (1 + 0.25 * Math.sin(petals * a));
+            const px = cx + r * Math.cos(a);
+            const py = cy + r * Math.sin(a);
+            if (a === 0) ctx.moveTo(px, py);
+            else ctx.lineTo(px, py);
+          }
+          ctx.stroke();
+
+          // 内側の同心円（二重丸）
+          ctx.beginPath();
+          ctx.arc(cx, cy, radius * 0.68, 0, Math.PI * 2);
+          ctx.stroke();
+
+          // 称賛文はカード側に表示する。丸の内側へ文字を重ねない。
+          ctx.restore();
+        } else if (ann.type === "circle") {
           const cx = (x1 + x2) / 2; const cy = (y1 + y2) / 2;
           const rx = Math.max(Math.abs(x2 - x1) / 2 + 10, 20);
           const ry = Math.max(Math.abs(y2 - y1) / 2 + 10, 20);
@@ -357,12 +399,7 @@ export default function Canvas({
           ctx.lineJoin = "round";
           ctx.stroke();
 
-          if (ann.comment) { 
-            ctx.font = `bold ${Math.max(16, Math.min(24, img.height * 0.035))}px ${fontName}`; 
-            ctx.fillStyle = color; 
-            ctx.textBaseline = "bottom"; 
-            ctx.fillText(ann.comment, cx + rx + 10, cy - ry + 15); 
-          }
+          // 丸と称賛文を分離し、手書き式への文字重なりを防ぐ。
         } else if (ann.type === "underline") {
           ctx.beginPath(); const segments = 12;
           for (let j = 0; j <= segments; j++) {
@@ -371,18 +408,17 @@ export default function Canvas({
             if (j === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
           }
           ctx.strokeStyle = color; ctx.lineWidth = 3 / zoom; ctx.lineCap = "round"; ctx.stroke();
-          if (ann.comment) { 
-            ctx.font = `bold ${Math.max(14, Math.min(20, img.height * 0.028))}px ${fontName}`; 
-            ctx.fillStyle = color; ctx.textBaseline = "top"; 
-            ctx.fillText(ann.comment, x1, y2 + 8 + 6 / zoom); 
-          }
+          // 下線の説明も称賛カードへ集約する。
         } else if (ann.type === "text" && ann.comment) {
-          ctx.font = `bold ${Math.max(16, Math.min(24, img.height * 0.035))}px ${fontName}`; 
-          ctx.fillStyle = color; ctx.textBaseline = "top";
-          ann.comment.split("\n").forEach((line, li) => ctx.fillText(line, x1, y1 + li * (Math.max(16, Math.min(24, img.height * 0.035)) * 1.3)));
+          ctx.font = `bold ${Math.max(16, Math.min(24, imgHeight * 0.035))}px ${fontName}`; 
+          ctx.fillStyle = color; 
+          ctx.textAlign = "left";
+          ctx.textBaseline = "top";
+          ann.comment.split("\n").forEach((line, li) => ctx.fillText(line, x1, y1 + li * (Math.max(16, Math.min(24, imgHeight * 0.035)) * 1.3)));
         }
       });
     }
+
 
     const lp = lassoPointsRef.current;
     if (curTool === "lasso" && lp.length > 1) {
@@ -402,12 +438,37 @@ export default function Canvas({
       ctx.fillStyle = "rgba(239,68,68,0.1)"; ctx.strokeStyle = "rgba(239,68,68,0.8)"; ctx.lineWidth = 1.5; ctx.fill(); ctx.stroke();
       ctx.restore();
     }
-  };
+  }, [dimensions, textInput]);
 
-  const requestDraw = () => {
+  const requestDraw = useCallback(() => {
     if (rafIdRef.current !== null) return;
     rafIdRef.current = requestAnimationFrame(() => { rafIdRef.current = null; drawImmediate(); });
-  };
+  }, [drawImmediate]);
+
+  useEffect(() => {
+    strokesRef.current = strokes;
+    requestDraw();
+  }, [strokes, requestDraw]);
+
+  useEffect(() => {
+    imagesRef.current = images;
+    const activeIds = new Set(images.map(image => image.id));
+    imageCacheRef.current.forEach((_, imageId) => {
+      if (!activeIds.has(imageId)) imageCacheRef.current.delete(imageId);
+    });
+    images.forEach(image => {
+      if (!imageCacheRef.current.has(image.id)) {
+        const element = new Image();
+        element.src = image.url;
+        element.onload = () => { imageCacheRef.current.set(image.id, element); requestDraw(); };
+      }
+    });
+    requestDraw();
+  }, [images, requestDraw]);
+
+  useEffect(() => {
+    requestDraw();
+  }, [initialPan.x, initialPan.y, initialZoom, aiAnnotations, requestDraw]);
 
   useEffect(() => {
     const el = containerRef.current; if (!el) return;
@@ -415,7 +476,7 @@ export default function Canvas({
     updateSize(); const ro = new ResizeObserver(updateSize); ro.observe(el); return () => ro.disconnect();
   }, []);
 
-  useEffect(() => { requestDraw(); }, [dimensions, images, texts, tool, textInput]);
+  useEffect(() => { requestDraw(); }, [dimensions, images, texts, tool, textInput, requestDraw]);
 
   const clearSelection = () => {
     selectedIdsRef.current = { strokes: [], images: [], texts: [] }; lassoPointsRef.current = []; dragOffsetRef.current = { x: 0, y: 0 };
@@ -442,6 +503,7 @@ export default function Canvas({
       if (s.type !== "draw" || s.isErased) return s;
       if (s.points.some(pt => dist2(worldPos, pt) < threshold)) {
         if (activeEraser.targetStrokeIds && !activeEraser.targetStrokeIds.includes(s.strokeId)) activeEraser.targetStrokeIds.push(s.strokeId);
+        if (activeEraser.type === "pixel-erase") return s;
         return { ...s, isErased: true, erasedAt: Date.now() };
       }
       return s;
@@ -453,7 +515,16 @@ export default function Canvas({
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (isReplayingRef.current) return;
     const canvas = canvasRef.current;
-    try { if (canvas) canvas.setPointerCapture(e.pointerId); } catch(err) {}
+
+    // Apple Pencil描画中のtouchは手のひらとして無視する。ストロークを
+    // 途中確定しないことが、iPadで自然に書けるために重要。
+    if (e.pointerType === "touch" && isDrawingRef.current && activeDrawingPointerTypeRef.current === "pen") {
+      ignoredPalmTouchesRef.current += 1;
+      reportPointer(e, 1, true);
+      return;
+    }
+    try { if (canvas) canvas.setPointerCapture(e.pointerId); } catch {}
+    reportPointer(e, 1, true);
 
     const rect = canvas?.getBoundingClientRect() ?? new DOMRect();
     const sx = e.clientX, sy = e.clientY;
@@ -468,7 +539,7 @@ export default function Canvas({
         const finalStroke = { ...currentStrokeRef.current, endTime: Date.now() };
         strokesRef.current = [...strokesRef.current, finalStroke];
         setStrokes(prev => [...prev, finalStroke]);
-        isDrawingRef.current = false; currentStrokeRef.current = null; activePointerIdRef.current = null;
+        isDrawingRef.current = false; currentStrokeRef.current = null; activePointerIdRef.current = null; activeDrawingPointerTypeRef.current = null;
       }
       
       if (activePointersRef.current.size === 2) {
@@ -578,24 +649,30 @@ export default function Canvas({
 
       isDrawingRef.current = true;
       activePointerIdRef.current = e.pointerId;
+      activeDrawingPointerTypeRef.current = e.pointerType;
       
       const pressure = e.pointerType === "pen" ? e.pressure : 0.5;
       const now = Date.now();
       let strokeType: "draw" | "erase" | "pixel-erase" = "draw";
       if (toolRef.current === "eraser") strokeType = eraserModeRef.current === "pixel" ? "pixel-erase" : "erase";
       
-      currentStrokeRef.current = { strokeId: `${strokeType[0]}_${now}_${Math.random().toString(36).substr(2, 9)}`, type: strokeType, startTime: now, endTime: now, points: [{ x: wp.x, y: wp.y, p: pressure, t: 0 }], color: strokeType === "draw" ? brushColorRef.current : undefined, width: strokeType === "draw" ? brushWidthRef.current : eraserWidthRef.current, targetStrokeIds: strokeType === "erase" ? [] : undefined };
+      currentStrokeRef.current = { strokeId: `${strokeType[0]}_${now}_${Math.random().toString(36).substr(2, 9)}`, type: strokeType, startTime: now, endTime: now, points: [{ x: wp.x, y: wp.y, p: pressure, t: 0 }], color: strokeType === "draw" ? brushColorRef.current : undefined, width: strokeType === "draw" ? brushWidthRef.current : eraserWidthRef.current, targetStrokeIds: strokeType !== "draw" ? [] : undefined };
       pointerPosRef.current = { x: sx - rect.left, y: sy - rect.top };
       
-      if (strokeType === "erase") performObjectErasing(wp, currentStrokeRef.current);
+      if (strokeType === "erase" || strokeType === "pixel-erase") performObjectErasing(wp, currentStrokeRef.current);
       requestDraw();
     }
+
   };
 
   const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const rect = canvasRef.current?.getBoundingClientRect() ?? new DOMRect();
     const sx = e.clientX, sy = e.clientY; const wp = screenToWorld(sx, sy, rect);
     pointerPosRef.current = { x: sx - rect.left, y: sy - rect.top };
+    const coalesced = typeof e.nativeEvent.getCoalescedEvents === "function"
+      ? e.nativeEvent.getCoalescedEvents()
+      : [];
+    reportPointer(e, Math.max(1, coalesced.length));
 
     if (e.pointerType === "touch" && activePointersRef.current.has(e.pointerId)) {
       activePointersRef.current.set(e.pointerId, { clientX: sx, clientY: sy });
@@ -645,15 +722,27 @@ export default function Canvas({
     if (toolRef.current === "lasso") { lassoPointsRef.current.push(wp); drawImmediate(); return; }
     
     if (currentStrokeRef.current) {
-      currentStrokeRef.current.points.push({ x: wp.x, y: wp.y, p: e.pointerType === "pen" ? e.pressure : 0.5, t: Date.now() - currentStrokeRef.current.startTime });
-      if (currentStrokeRef.current.type === "erase") performObjectErasing(wp, currentStrokeRef.current);
+      const samples = coalesced.length > 0 ? coalesced : [e.nativeEvent];
+      for (const sample of samples) {
+        const samplePoint = screenToWorld(sample.clientX, sample.clientY, rect);
+        currentStrokeRef.current.points.push({
+          x: samplePoint.x,
+          y: samplePoint.y,
+          p: sample.pointerType === "pen" ? sample.pressure : 0.5,
+          t: Date.now() - currentStrokeRef.current.startTime,
+        });
+        if (currentStrokeRef.current.type === "erase" || currentStrokeRef.current.type === "pixel-erase") {
+          performObjectErasing(samplePoint, currentStrokeRef.current);
+        }
+      }
       drawImmediate();
     }
+
   };
 
   const handlePointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current; 
-    try { if (canvas) canvas.releasePointerCapture(e.pointerId); } catch(err) {}
+    try { if (canvas) canvas.releasePointerCapture(e.pointerId); } catch {}
     
     if (e.pointerType === "touch") {
       activePointersRef.current.delete(e.pointerId);
@@ -693,7 +782,7 @@ export default function Canvas({
         strokesRef.current = [...strokesRef.current, finalStroke];
         setStrokes(prev => [...prev, finalStroke]);
       }
-      isDrawingRef.current = false; currentStrokeRef.current = null; activePointerIdRef.current = null;
+      isDrawingRef.current = false; currentStrokeRef.current = null; activePointerIdRef.current = null; activeDrawingPointerTypeRef.current = null;
       onTransformChange?.(panRef.current, zoomRef.current);
       requestDraw();
     }
@@ -708,13 +797,16 @@ export default function Canvas({
         strokesRef.current = [...strokesRef.current, finalStroke];
         setStrokes(prev => [...prev, finalStroke]);
       }
-      isDrawingRef.current = false; currentStrokeRef.current = null; activePointerIdRef.current = null;
+      isDrawingRef.current = false; currentStrokeRef.current = null; activePointerIdRef.current = null; activeDrawingPointerTypeRef.current = null;
       requestDraw();
     }
   };
 
   useEffect(() => { if (textInput && textInputRef.current) setTimeout(() => textInputRef.current?.focus(), 10); }, [textInput]);
-  const textInputPos = textInput ? worldToContainer(textInput.worldX, textInput.worldY) : null;
+  const textInputPos = textInput ? {
+    x: textInput.worldX * initialZoom + initialPan.x,
+    y: textInput.worldY * initialZoom + initialPan.y,
+  } : null;
 
   return (
     <div
@@ -757,7 +849,7 @@ export default function Canvas({
           onChange={e => setTextInput(prev => prev ? { ...prev, text: e.target.value } : null)}
           onBlur={() => commitTextInput(true)}
           onKeyDown={e => { if (e.key === "Escape") { e.preventDefault(); commitTextInput(false); } }}
-          style={{ position: "absolute", left: textInputPos.x, top: textInputPos.y, fontSize: `${textStyle.fontSize * zoomRef.current}px`, color: textStyle.color, fontWeight: textStyle.fontWeight, fontStyle: textStyle.fontStyle, textDecoration: textStyle.textDecoration, fontFamily: "sans-serif", lineHeight: 1.2, background: "rgba(255,255,255,0.85)", border: "1.5px dashed #5c2d91", borderRadius: "2px", outline: "none", resize: "none", padding: "2px 4px", whiteSpace: "pre", overflow: "hidden", minWidth: "80px", minHeight: `${textStyle.fontSize * 1.4 * zoomRef.current}px`, zIndex: 20, boxShadow: "0 2px 8px rgba(92,45,145,0.15)", userSelect: "text", WebkitUserSelect: "text", pointerEvents: "auto" }}
+          style={{ position: "absolute", left: textInputPos.x, top: textInputPos.y, fontSize: `${textStyle.fontSize * initialZoom}px`, color: textStyle.color, fontWeight: textStyle.fontWeight, fontStyle: textStyle.fontStyle, textDecoration: textStyle.textDecoration, fontFamily: "sans-serif", lineHeight: 1.2, background: "rgba(255,255,255,0.85)", border: "1.5px dashed #5c2d91", borderRadius: "2px", outline: "none", resize: "none", padding: "2px 4px", whiteSpace: "pre", overflow: "hidden", minWidth: "80px", minHeight: `${textStyle.fontSize * 1.4 * initialZoom}px`, zIndex: 20, boxShadow: "0 2px 8px rgba(92,45,145,0.15)", userSelect: "text", WebkitUserSelect: "text", pointerEvents: "auto" }}
           onInput={e => { const t = e.target as HTMLTextAreaElement; t.style.height = "auto"; t.style.height = t.scrollHeight + "px"; t.style.width = "auto"; t.style.width = Math.max(80, t.scrollWidth) + "px"; }}
         />
       )}
