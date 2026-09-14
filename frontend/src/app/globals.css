@@ -640,6 +640,11 @@ html, body {
   user-select: none !important;
 }
 
+.process-mark-legend { display: inline-flex; align-items: center; gap: 6px; margin-top: 8px; color: #5b21b6; font-size: 12px; font-weight: 700; line-height: 1.4; }
+.process-mark-legend svg { flex-shrink: 0; }
+.answer-verification-note { display: flex; flex-direction: column; gap: 4px; padding: 12px 14px; border: 1px solid #c4b5fd; border-radius: 12px; background: #f5f3ff; color: #4c1d95; font-size: 12px; line-height: 1.5; }
+.answer-verification-note strong { font-size: 14px; }
+
 .experiment-status {
   min-height: 100dvh;
   display: flex;
@@ -698,7 +703,7 @@ html, body {
 .experiment-save-error { margin: 0; color: #b91c1c; font-size: 13px; line-height: 1.5; }
 
 .praise-celebration { display: flex; align-items: center; gap: 16px; padding: 18px; border: 1px solid #fcd34d; border-radius: 18px; background: linear-gradient(120deg, #fff7ed, #fdf2f8 58%, #faf5ff); box-shadow: 0 8px 24px #be185d15; }
-.praise-celebration-icon { flex: 0 0 62px; width: 62px; height: 62px; display: grid; place-items: center; color: #b45309; background: #fef3c7; border: 2px solid #fcd34d; border-radius: 50%; animation: praise-bloom .7s ease-out both; }
+.praise-celebration-icon { flex: 0 0 62px; width: 62px; height: 62px; display: grid; place-items: center; color: #7c3aed; background: #f5f3ff; border: 2px solid #c4b5fd; border-radius: 16px; animation: praise-bloom .7s ease-out both; }
 .praise-celebration > div { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
 .praise-celebration-kicker { color: #9d174d; font-size: 12px; font-weight: 800; }
 .praise-celebration strong { color: #581c87; font-size: clamp(17px, 2.8vw, 22px); line-height: 1.4; }

@@ -313,8 +313,7 @@ export default function Canvas({
       }
     });
 
-    // Older saved pages may contain the same AI evidence more than once. Draw each
-    // piece of evidence only once so circles/stamps never pile up visually.
+    // Older saved pages may contain the same AI evidence more than once.
     const seenAnnotations = new Set<string>();
     const annotations = aiAnnotationsRef.current.filter((annotation) => {
       const key = annotation.evidenceId
@@ -344,78 +343,38 @@ export default function Canvas({
         const [ymin, xmin, ymax, xmax] = ann.box_2d;
         const x1 = imgX + (xmin / 1000) * imgWidth; const y1 = imgY + (ymin / 1000) * imgHeight;
         const x2 = imgX + (xmax / 1000) * imgWidth; const y2 = imgY + (ymax / 1000) * imgHeight;
-        const color = ann.color || (ann.type === "circle" ? "#107c41" : "#e81123");
-
-        const fontName = 'var(--font-yomogi), "Yomogi", "Zen Kurenaido", cursive, sans-serif';
-
-        if (ann.type === "stamp") {
-          const cx = (x1 + x2) / 2; const cy = (y1 + y2) / 2;
-          const radius = Math.max(Math.abs(x2 - x1) / 2, Math.abs(y2 - y1) / 2, 45);
-
-          ctx.save();
-          ctx.strokeStyle = "#e81123";
-          ctx.lineWidth = 3.5 / zoom;
-          ctx.lineCap = "round";
-          ctx.lineJoin = "round";
-
-          // 日本の伝統的な「花丸（はなまる）」を描画
-          ctx.beginPath();
-          const petals = 6;
-          for (let a = 0; a <= Math.PI * 2 + 0.2; a += 0.04) {
-            const r = radius * (1 + 0.25 * Math.sin(petals * a));
-            const px = cx + r * Math.cos(a);
-            const py = cy + r * Math.sin(a);
-            if (a === 0) ctx.moveTo(px, py);
-            else ctx.lineTo(px, py);
-          }
-          ctx.stroke();
-
-          // 内側の同心円（二重丸）
-          ctx.beginPath();
-          ctx.arc(cx, cy, radius * 0.68, 0, Math.PI * 2);
-          ctx.stroke();
-
-          // 称賛文はカード側に表示する。丸の内側へ文字を重ねない。
-          ctx.restore();
-        } else if (ann.type === "circle") {
-          const cx = (x1 + x2) / 2; const cy = (y1 + y2) / 2;
-          const rx = Math.max(Math.abs(x2 - x1) / 2 + 10, 20);
-          const ry = Math.max(Math.abs(y2 - y1) / 2 + 10, 20);
-          
-          ctx.beginPath();
-          const segments = 30;
-          for (let i = 0; i <= segments + 2; i++) {
-            const angle = (i / segments) * Math.PI * 2;
-            const noiseX = Math.sin(i * 3.1) * 2;
-            const noiseY = Math.cos(i * 2.7) * 2;
-            const px = cx + (rx + noiseX) * Math.cos(angle);
-            const py = cy + (ry + noiseY) * Math.sin(angle);
-            if (i === 0) ctx.moveTo(px, py);
-            else ctx.lineTo(px, py);
-          }
-          ctx.strokeStyle = color; 
-          ctx.lineWidth = 3 / zoom; 
-          ctx.lineCap = "round";
-          ctx.lineJoin = "round";
-          ctx.stroke();
-
-          // 丸と称賛文を分離し、手書き式への文字重なりを防ぐ。
-        } else if (ann.type === "underline") {
-          ctx.beginPath(); const segments = 12;
-          for (let j = 0; j <= segments; j++) {
-            const px = x1 + (x2 - x1) * (j / segments); 
-            const py = y2 + 4 + Math.sin(j * 1.5) * 2 / zoom;
-            if (j === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
-          }
-          ctx.strokeStyle = color; ctx.lineWidth = 3 / zoom; ctx.lineCap = "round"; ctx.stroke();
-          // 下線の説明も称賛カードへ集約する。
-        } else if (ann.type === "text" && ann.comment) {
-          ctx.font = `bold ${Math.max(16, Math.min(24, imgHeight * 0.035))}px ${fontName}`; 
-          ctx.fillStyle = color; 
-          ctx.textAlign = "left";
-          ctx.textBaseline = "top";
-          ann.comment.split("\n").forEach((line, li) => ctx.fillText(line, x1, y1 + li * (Math.max(16, Math.min(24, imgHeight * 0.035)) * 1.3)));
+        // These marks locate a *process* observation, never a checked answer.
+        // Render even legacy circle/stamp data as a small purple sparkle beside
+        // the writing, rather than a grading circle around the answer.
+        const size = 10 / zoom;
+        const gap = 17 / zoom;
+        const viewLeft = -pan.x / zoom;
+        const viewTop = -pan.y / zoom;
+        const viewRight = (dimensions.width - pan.x) / zoom;
+        const viewBottom = (dimensions.height - pan.y) / zoom;
+        const markerX = x2 + gap + size <= viewRight ? x2 + gap
+          : x1 - gap - size >= viewLeft ? x1 - gap
+          : Math.max(viewLeft + size, Math.min(viewRight - size, x2));
+        const markerY = y1 - gap - size >= viewTop ? y1 - gap
+          : y2 + gap + size <= viewBottom ? y2 + gap
+          : Math.max(viewTop + size, Math.min(viewBottom - size, y1));
+        ctx.save();
+        ctx.beginPath();
+        for (let point = 0; point < 8; point++) {
+          const angle = -Math.PI / 2 + point * Math.PI / 4;
+          const radius = point % 2 === 0 ? size : size * 0.35;
+          const px = markerX + Math.cos(angle) * radius;
+          const py = markerY + Math.sin(angle) * radius;
+          if (point === 0) ctx.moveTo(px, py);
+          else ctx.lineTo(px, py);
         }
+        ctx.closePath();
+        ctx.fillStyle = "#7c3aed";
+        ctx.strokeStyle = "#ffffff";
+        ctx.lineWidth = 1.5 / zoom;
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
       });
     }
 

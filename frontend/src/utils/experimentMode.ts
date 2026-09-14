@@ -1,6 +1,6 @@
 export type ExperimentSetId = "easy" | "standard" | "challenge";
 export type FeedbackCondition = "process_praise" | "neutral_summary";
-export const EXPERIMENT_PROTOCOL_VERSION = "adult-pilot-v1.2";
+export const EXPERIMENT_PROTOCOL_VERSION = "adult-pilot-v1.3";
 
 export interface ExperimentConfig {
   participantCode: string;
@@ -54,6 +54,10 @@ export function experimentProblemIds(config: ExperimentConfig): readonly string[
 }
 
 export function experimentWorkspaceKey(config: ExperimentConfig): string {
+  return `experiment_v1_3_${config.participantCode}_${config.setId}_${config.feedbackCondition}`;
+}
+
+export function previousExperimentWorkspaceKey(config: ExperimentConfig): string {
   return `experiment_v1_2_${config.participantCode}_${config.setId}_${config.feedbackCondition}`;
 }
 

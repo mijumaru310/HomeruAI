@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+from dataclasses import dataclass
 from typing import Any, TypeVar
 from uuid import uuid4
 
@@ -13,6 +14,11 @@ from .config import (
     GEMINI_FALLBACK_MODEL,
     GEMINI_MODEL,
     GEMINI_TIMEOUT_MS,
+    VERTEX_LOCATION,
+    VERTEX_MODEL,
+    VERTEX_PROJECT,
+    VERTEX_SERVICE_ACCOUNT_JSON,
+    VERTEX_TIMEOUT_MS,
     get_question_metadata,
 )
 from .learner_model import choose_intervention, estimate_learner_state
@@ -38,6 +44,48 @@ from .schemas import (
 
 logger = logging.getLogger("homeruai.analyzer")
 SchemaType = TypeVar("SchemaType", bound=BaseModel)
+
+
+@dataclass(frozen=True)
+class GenerationResult:
+    value: BaseModel
+    model: str
+    provider: str
+    vertex_error_category: str | None = None
+
+
+class AIProvidersUnavailable(Exception):
+    def __init__(self, category: str):
+        super().__init__(category)
+        self.category = category
+
+
+def _api_key_configured() -> bool:
+    return bool(GEMINI_API_KEY and GEMINI_API_KEY != "your_gemini_api_key_here")
+
+
+def _create_client(provider: str, genai: Any, types: Any) -> Any:
+    if provider == "gemini_api":
+        return genai.Client(
+            enterprise=False,
+            api_key=GEMINI_API_KEY,
+            http_options=types.HttpOptions(timeout=GEMINI_TIMEOUT_MS),
+        )
+    credentials = None
+    if VERTEX_SERVICE_ACCOUNT_JSON:
+        from google.oauth2 import service_account
+
+        account_info = json.loads(VERTEX_SERVICE_ACCOUNT_JSON)
+        credentials = service_account.Credentials.from_service_account_info(
+            account_info, scopes=["https://www.googleapis.com/auth/cloud-platform"]
+        )
+    return genai.Client(
+        enterprise=True,
+        project=VERTEX_PROJECT,
+        location=VERTEX_LOCATION,
+        credentials=credentials,
+        http_options=types.HttpOptions(timeout=VERTEX_TIMEOUT_MS),
+    )
 
 
 def _decode_image(data_uri: str) -> tuple[bytes, str]:
@@ -83,8 +131,9 @@ def _generate_structured(
     schema: type[SchemaType],
     contents: list[Any] | str,
     system_instruction: str,
+    models: list[str],
 ) -> tuple[SchemaType, str]:
-    candidates = list(dict.fromkeys([GEMINI_MODEL, GEMINI_FALLBACK_MODEL]))
+    candidates = list(dict.fromkeys(models))
     last_error: Exception | None = None
     for index, model in enumerate(candidates):
         try:
@@ -104,11 +153,55 @@ def _generate_structured(
             last_error = error
             category = _error_category(error)
             logger.warning("Gemini call failed model=%s category=%s", model, category)
-            # A second model cannot repair local schema/authentication failures.
-            if category in {"schema", "auth"} or index == len(candidates) - 1:
+            # A different model only helps when this model is unavailable.
+            if category != "model" or index == len(candidates) - 1:
                 break
     assert last_error is not None
     raise last_error
+
+
+def _generate_with_failover(
+    types: Any,
+    *,
+    schema: type[SchemaType],
+    contents: list[Any] | str,
+    system_instruction: str,
+    try_vertex: bool = True,
+) -> GenerationResult:
+    from google import genai
+
+    vertex_error_category: str | None = None
+    last_category = "configuration"
+    for provider in ("vertex_ai", "gemini_api"):
+        if provider == "vertex_ai" and (not try_vertex or not VERTEX_PROJECT):
+            continue
+        if provider == "gemini_api" and not _api_key_configured():
+            continue
+        client = None
+        try:
+            client = _create_client(provider, genai, types)
+            value, model = _generate_structured(
+                client, types,
+                schema=schema,
+                contents=contents,
+                system_instruction=system_instruction,
+                models=([VERTEX_MODEL] if provider == "vertex_ai" else
+                        [GEMINI_MODEL, GEMINI_FALLBACK_MODEL]),
+            )
+            return GenerationResult(value, model, provider, vertex_error_category)
+        except Exception as error:
+            last_category = _error_category(error)
+            if provider == "vertex_ai":
+                vertex_error_category = last_category
+            logger.warning("AI provider failed provider=%s category=%s", provider, last_category)
+        finally:
+            if client is not None:
+                try:
+                    client.close()
+                except Exception:
+                    # A successful response must not be discarded for cleanup failure.
+                    logger.warning("AI client cleanup failed provider=%s", provider)
+    raise AIProvidersUnavailable(last_category)
 
 
 def _recognition_prompt(
@@ -138,7 +231,7 @@ def _recognition_prompt(
 3. 赤線は誤りと決めつけず、読める範囲だけ erased_work に記録してください。
 4. 問題に複数の設問がある、画像が不鮮明、問題領域が不明な場合は uncertainties に明記してください。
 5. 読めない内容を推測で補完せず、confidence を下げてください。
-6. 解答の正誤だけでなく、途中式がどこまで進んだかを observed_steps に記録してください。
+6. この段階では正誤を判定せず、途中式がどこまで進んだかを observed_steps に記録してください。
 
 コードが観測したプロセス根拠（画像理解の補助情報）:
 {json.dumps(evidence_json, ensure_ascii=False)}
@@ -160,6 +253,7 @@ def _feedback_prompt(
 重要な制約:
 - praise_points の evidence_id は、下の根拠一覧に実在するIDだけを使う。
 - 画像認識の confidence が低いときは、数式や正誤を断定せず筆記・消去・再開を褒める。
+- 正答との照合を行っていないため、confidence が高くても「正解」「合っている」「不正解」などの判定や丸付けをしない。称賛は解く過程だけに向ける。
 - 停止を一律に「迷い」と呼ばない。停止後に再開した場合は熟考と粘り強さとして扱う。
 - 消去は減点せず、見直しや自己修正の行動として扱う。
 - 習熟度や自主性の数値を本人に伝えない。人格を評価しない。
@@ -186,6 +280,23 @@ def _feedback_prompt(
 利用可能な根拠:
 {json.dumps(evidence_json, ensure_ascii=False)}
 """.strip()
+
+
+_UNVERIFIED_GRADE_CLAIMS = (
+    "正解", "不正解", "正しい答え", "計算が正しい", "式が正しい",
+    "合っている", "合っています", "間違いです", "誤答", "満点", "100点",
+    "perfect answer", "correct answer", "incorrect answer", "wrong answer",
+)
+
+
+def _has_unverified_grade_claim(feedback: AIFeedback) -> bool:
+    text = " ".join([
+        feedback.thought_type_badge,
+        *(point.message for point in feedback.praise_points),
+        feedback.encouragement_message,
+        feedback.summary,
+    ]).lower()
+    return any(claim in text for claim in _UNVERIFIED_GRADE_CLAIMS)
 
 
 def _local_praise(
@@ -287,7 +398,7 @@ def _annotation_for_evidence(
         return None
     return AnnotationSchema(
         box_2d=values,
-        type="stamp" if praise.evidence_id == "first_step" else "circle",
+        type="process_marker",
         # The full message belongs in the feedback card. Drawing it beside a
         # mark can cover the learner's formula, especially on small screens.
         comment=None,
@@ -403,13 +514,13 @@ def analyze_process(
     metadata = get_question_metadata(question_id, question_text)
     metrics, evidence = extract_process_features(strokes)
     analysis_id = f"analysis_{uuid4().hex}"
-    if not GEMINI_API_KEY or GEMINI_API_KEY == "your_gemini_api_key_here":
+    if not VERTEX_PROJECT and not _api_key_configured():
         return build_local_fallback(
             strokes, metadata["title"], praise_mode, calculate_pauses(strokes),
             (
-                "Gemini APIキーが未設定のため、観測済みの操作記録だけを集計しました。"
+                "AI接続が未設定のため、観測済みの操作記録だけを集計しました。"
                 if feedback_condition == "neutral_summary" else
-                "Gemini APIキーが未設定のため、観測済みの筆記プロセスだけで称賛しました。"
+                "AI接続が未設定のため、観測済みの筆記プロセスだけで称賛しました。"
             ),
             provider_error_category="configuration",
             previous_state=previous_state,
@@ -418,13 +529,8 @@ def analyze_process(
         )
 
     try:
-        from google import genai
         from google.genai import types
 
-        client = genai.Client(
-            api_key=GEMINI_API_KEY,
-            http_options=types.HttpOptions(timeout=GEMINI_TIMEOUT_MS),
-        )
         contents: list[Any] = []
         if source_image_b64:
             source_bytes, source_mime = _decode_image(source_image_b64)
@@ -438,22 +544,22 @@ def analyze_process(
             types.Part.from_bytes(data=process_bytes, mime_type=process_mime),
             _recognition_prompt(question_id, question_text, source_type, evidence),
         ])
-        recognition, recognition_model = _generate_structured(
-            client,
+        recognition_result = _generate_with_failover(
             types,
             schema=AIRecognition,
             contents=contents,
             system_instruction="問題画像と手書きを事実に忠実に読み取る認識器です。推測を事実として出力しません。",
         )
+        recognition = recognition_result.value
     except Exception as error:
-        category = _error_category(error)
+        category = error.category if isinstance(error, AIProvidersUnavailable) else _error_category(error)
         logger.warning("Recognition failed analysis_id=%s category=%s", analysis_id, category)
         fallback = build_local_fallback(
             strokes, metadata["title"], praise_mode, calculate_pauses(strokes),
             (
-                f"Geminiの画像認識を完了できなかったため（{category}）、観測済みの操作記録だけを集計しました。"
+                f"AIの画像認識を完了できなかったため（{category}）、観測済みの操作記録だけを集計しました。"
                 if feedback_condition == "neutral_summary" else
-                f"Geminiの画像認識を完了できなかったため（{category}）、観測済みの筆記プロセスだけで称賛しました。"
+                f"AIの画像認識を完了できなかったため（{category}）、観測済みの筆記プロセスだけで称賛しました。"
             ),
             provider_error_category=category,
             previous_state=previous_state,
@@ -489,6 +595,10 @@ def analyze_process(
             summary="記録された操作量と時間を、評価語を加えず表示しました。",
             annotations=[],
             source="hybrid",
+            ai_provider=recognition_result.provider,
+            provider_error_category=recognition_result.vertex_error_category,
+            notice=(f"Vertex AIを利用できなかったため、APIキーで画像を読み取りました（{recognition_result.vertex_error_category}）。"
+                    if recognition_result.vertex_error_category else None),
             process_metrics=metrics,
             process_evidence=evidence,
             learner_state=state,
@@ -497,19 +607,26 @@ def analyze_process(
         )
     feedback: AIFeedback | None = None
     feedback_error: str | None = None
+    feedback_result: GenerationResult | None = None
     try:
-        feedback, _ = _generate_structured(
-            client,
+        feedback_result = _generate_with_failover(
             types,
             schema=AIFeedback,
             contents=_feedback_prompt(
                 recognition, metrics, evidence, state, praise_mode, preliminary.action
             ),
             system_instruction="観測された根拠にだけ結びつけて、学習者の次の自発的な一歩を支える称賛を作ります。",
+            try_vertex=recognition_result.provider == "vertex_ai",
         )
+        feedback = feedback_result.value
     except Exception as error:
-        feedback_error = _error_category(error)
+        feedback_error = error.category if isinstance(error, AIProvidersUnavailable) else _error_category(error)
         logger.warning("Feedback failed analysis_id=%s category=%s", analysis_id, feedback_error)
+
+    rejected_grade_claim = bool(feedback and _has_unverified_grade_claim(feedback))
+    if rejected_grade_claim:
+        logger.warning("Unverified grade claim removed analysis_id=%s", analysis_id)
+        feedback = None
 
     valid_ids = {item.evidence_id for item in evidence}
     ai_praise = [] if not feedback else [
@@ -527,9 +644,20 @@ def analyze_process(
     current_answer = " / ".join(recognition.current_work) or None
     erased_attempts = " / ".join(recognition.erased_work) or "なし"
     source = "ai" if feedback and ai_praise else "hybrid"
+    ai_provider = (
+        "mixed" if feedback_result and feedback_result.provider != recognition_result.provider
+        else recognition_result.provider
+    )
+    vertex_error = recognition_result.vertex_error_category or (
+        feedback_result.vertex_error_category if feedback_result else None
+    )
     notice = None
     if feedback_error:
-        notice = f"画像認識はGeminiで完了し、称賛文は観測データから生成しました（{feedback_error}）。"
+        notice = f"画像認識はAIで完了し、称賛文は観測データから生成しました（{feedback_error}）。"
+    elif rejected_grade_claim:
+        notice = "AIの文面に未検証の正誤判定が含まれたため、操作記録に基づく称賛へ切り替えました。"
+    elif vertex_error:
+        notice = f"Vertex AIを利用できなかったため、APIキーへ切り替えて分析しました（{vertex_error}）。"
     return AnalysisResponse(
         thought_type_badge=(
             feedback.thought_type_badge if feedback else
@@ -554,7 +682,8 @@ def analyze_process(
         summary=(feedback.summary if feedback else "筆記プロセスを根拠に称賛しました。"),
         annotations=annotations,
         source=source,
-        provider_error_category=feedback_error,
+        ai_provider=ai_provider,
+        provider_error_category=feedback_error or vertex_error,
         notice=notice,
         process_metrics=metrics,
         process_evidence=evidence,

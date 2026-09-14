@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { discardPendingStudyEventsForLearner } from "../../../utils/adaptiveLearning";
-import { experimentWorkspaceKey, legacyExperimentWorkspaceKey, type ExperimentConfig, type ExperimentSetId, type FeedbackCondition } from "../../../utils/experimentMode";
+import { experimentWorkspaceKey, legacyExperimentWorkspaceKey, previousExperimentWorkspaceKey, type ExperimentConfig, type ExperimentSetId, type FeedbackCondition } from "../../../utils/experimentMode";
 import { deleteWorkspace } from "../../../utils/notebookStorage";
 
 const sets: ExperimentSetId[] = ["easy", "standard", "challenge"];
@@ -28,6 +28,7 @@ export default function ResearchCleanupPage() {
         for (const feedbackCondition of conditions) {
           const config: ExperimentConfig = { participantCode, setId, feedbackCondition };
           await deleteWorkspace(experimentWorkspaceKey(config));
+          await deleteWorkspace(previousExperimentWorkspaceKey(config));
           await deleteWorkspace(legacyExperimentWorkspaceKey(config));
         }
       }
