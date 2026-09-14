@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .libsql_connection import LibsqlConnection
 from .schemas import LearnerState, StudyEventRequest
 
 
@@ -26,20 +27,44 @@ class ResearchStore:
     Raw worksheet images and stroke point arrays are deliberately not stored.
     """
 
-    def __init__(self, database_path: str | Path):
+    def __init__(
+        self, database_path: str | Path, *, remote_url: str | None = None,
+        auth_token: str | None = None,
+    ):
+        if bool(remote_url) != bool(auth_token):
+            raise ValueError("Turso URL and authentication token must both be configured.")
         self.path = Path(database_path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.remote_url = remote_url
+        self.auth_token = auth_token
+        if not remote_url:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
         self.initialize()
 
-    def connect(self) -> sqlite3.Connection:
+    @classmethod
+    def from_config(cls, database_path: str | Path | None = None) -> "ResearchStore":
+        """Use the deployed database unless a local file was explicitly requested."""
+        from .config import DATABASE_PATH, TURSO_AUTH_TOKEN, TURSO_DATABASE_URL
+
+        if database_path is not None:
+            return cls(database_path)
+        return cls(
+            DATABASE_PATH,
+            remote_url=TURSO_DATABASE_URL or None,
+            auth_token=TURSO_AUTH_TOKEN or None,
+        )
+
+    def connect(self) -> sqlite3.Connection | LibsqlConnection:
+        if self.remote_url:
+            import libsql
+
+            return LibsqlConnection(libsql.connect(database=self.remote_url, auth_token=self.auth_token))
         connection = sqlite3.connect(self.path, timeout=15)
         connection.row_factory = sqlite3.Row
         return connection
 
     def initialize(self) -> None:
         with closing(self.connect()) as connection, connection:
-            connection.executescript("""
-                PRAGMA journal_mode=WAL;
+            schema = """
                 CREATE TABLE IF NOT EXISTS learner_profiles (
                     learner_id TEXT PRIMARY KEY,
                     state_json TEXT NOT NULL,
@@ -77,7 +102,14 @@ class ResearchStore:
                     model_version TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
-            """)
+            """
+            if self.remote_url:
+                # A remote HTTP connection cannot run SQLite's local WAL pragma.
+                for statement in schema.split(";"):
+                    if statement.strip():
+                        connection.execute(statement)
+            else:
+                connection.executescript("PRAGMA journal_mode=WAL;" + schema)
 
     @staticmethod
     def hash_id(value: str) -> str:
@@ -136,24 +168,21 @@ class ResearchStore:
         learner_hash = self.hash_id(learner_id)
         updated_at = _now()
         with closing(self.connect()) as connection, connection:
-            existing = connection.execute(
-                "SELECT sample_count FROM learner_profiles WHERE learner_id = ?",
-                (learner_hash,),
-            ).fetchone()
-            sample_count = (existing["sample_count"] if existing else 0) + 1
-            connection.execute(
+            row = connection.execute(
                 """
                 INSERT INTO learner_profiles (
                     learner_id, state_json, sample_count, updated_at, schema_version
-                ) VALUES (?, ?, ?, ?, ?)
+                ) VALUES (?, ?, 1, ?, ?)
                 ON CONFLICT(learner_id) DO UPDATE SET
                     state_json=excluded.state_json,
-                    sample_count=excluded.sample_count,
+                    sample_count=learner_profiles.sample_count + 1,
                     updated_at=excluded.updated_at,
                     schema_version=excluded.schema_version
+                RETURNING sample_count
                 """,
-                (learner_hash, state.model_dump_json(), sample_count, updated_at, SCHEMA_VERSION),
-            )
+                (learner_hash, state.model_dump_json(), updated_at, SCHEMA_VERSION),
+            ).fetchone()
+            sample_count = row["sample_count"]
         return sample_count, updated_at
 
     def log_analysis(

@@ -4,4 +4,5 @@ pydantic==2.13.5
 pillow==12.3.0
 google-genai==2.22.0
 python-dotenv==1.2.3
+libsql==0.1.11
 

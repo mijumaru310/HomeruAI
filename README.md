@@ -44,6 +44,8 @@ npm run dev
 
 ブラウザで `http://localhost:3000` を開きます。実AI分析を使う場合は `backend/.env.example` を `backend/.env` にコピーし、APIキーを設定してください。
 
+Vercel への公開は [VERCEL_DEPLOYMENT.md](./VERCEL_DEPLOYMENT.md) を参照してください。公開時の研究ログはローカル SQLite ではなく Turso の永続DBに保存します。
+
 ### 研究データの出力と再学習
 
 研究ログは `backend/data/homeruai.db` に保存されます。学習者IDはハッシュ化され、生画像・Base64・ストローク点列は保存されません。

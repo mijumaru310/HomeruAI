@@ -6,15 +6,17 @@ import argparse
 import csv
 import json
 import re
-import sqlite3
 import sys
 from collections import Counter
+from contextlib import closing
 from pathlib import Path
 
 BACKEND = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND))
 
 from scripts.create_experiment_assignments import PROTOCOL_VERSION, SETS
+from app.config import DATABASE_PATH, TURSO_DATABASE_URL
+from app.storage import ResearchStore
 
 
 def summarize_events(events: list[dict], assigned_set: str, assigned_condition: str) -> dict[str, str | int]:
@@ -67,15 +69,16 @@ def summarize_events(events: list[dict], assigned_set: str, assigned_condition: 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Audit assigned participants and event completeness.")
     parser.add_argument("--assignments", type=Path, required=True, help="Private CSV from create_experiment_assignments.py")
-    parser.add_argument("--database", type=Path, default=Path(__file__).resolve().parents[1] / "data" / "homeruai.db")
+    parser.add_argument("--database", type=Path, help="Explicit local SQLite file (otherwise use configured Turso or local DB).")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.output.resolve() == args.assignments.resolve():
         raise SystemExit("audit output must not overwrite the assignment sheet")
     if args.output.exists():
         raise SystemExit(f"refusing to overwrite existing audit: {args.output}")
-    if not args.database.exists():
-        raise SystemExit(f"database not found: {args.database}")
+    local_database = args.database or Path(DATABASE_PATH)
+    if (args.database or not TURSO_DATABASE_URL) and not local_database.is_file():
+        raise SystemExit(f"database not found: {local_database}")
 
     with args.assignments.open(newline="", encoding="utf-8-sig") as handle:
         assignments = list(csv.DictReader(handle))
@@ -89,28 +92,25 @@ def main() -> None:
         if row.get("protocol_version") != PROTOCOL_VERSION:
             raise SystemExit("assignment sheet has an unexpected protocol version")
 
-    from app.storage import ResearchStore
-    connection = sqlite3.connect(f"file:{args.database.resolve()}?mode=ro", uri=True)
-    connection.row_factory = sqlite3.Row
     output_rows = []
-    for assignment in assignments:
-        code = assignment["participant_code"]
-        learner_hash = ResearchStore.hash_id(f"study_{code}")
-        rows = connection.execute(
-            "SELECT event_type, payload_json FROM study_events WHERE learner_hash=? ORDER BY occurred_at_ms, created_at",
-            (learner_hash,),
-        ).fetchall()
-        events = [{"event_type": row["event_type"], "payload": json.loads(row["payload_json"])} for row in rows]
-        condition = "neutral_summary" if assignment["feedback_condition"] == "neutral" else "process_praise"
-        summary = summarize_events(events, assignment["study_set"], condition)
-        output_rows.append({
-            "participant_code": code, "learner_hash": learner_hash,
-            "assigned_protocol_version": assignment["protocol_version"],
-            "study_set": assignment["study_set"],
-            "feedback_condition": assignment["feedback_condition"],
-            **summary,
-        })
-    connection.close()
+    with closing(ResearchStore.from_config(args.database).connect()) as connection:
+        for assignment in assignments:
+            code = assignment["participant_code"]
+            learner_hash = ResearchStore.hash_id(f"study_{code}")
+            rows = connection.execute(
+                "SELECT event_type, payload_json FROM study_events WHERE learner_hash=? ORDER BY occurred_at_ms, created_at",
+                (learner_hash,),
+            ).fetchall()
+            events = [{"event_type": row["event_type"], "payload": json.loads(row["payload_json"])} for row in rows]
+            condition = "neutral_summary" if assignment["feedback_condition"] == "neutral" else "process_praise"
+            summary = summarize_events(events, assignment["study_set"], condition)
+            output_rows.append({
+                "participant_code": code, "learner_hash": learner_hash,
+                "assigned_protocol_version": assignment["protocol_version"],
+                "study_set": assignment["study_set"],
+                "feedback_condition": assignment["feedback_condition"],
+                **summary,
+            })
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("w", newline="", encoding="utf-8-sig") as handle:
         writer = csv.DictWriter(handle, fieldnames=output_rows[0].keys())
