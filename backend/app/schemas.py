@@ -52,7 +52,7 @@ class AnnotationSchema(BaseModel):
         list[NormalizedCoordinate], Field(min_length=4, max_length=4)
     ] = Field(description="[ymin, xmin, ymax, xmax] normalized coordinates")
     # Legacy shapes are accepted for saved data; new praise is not a grade mark.
-    type: Literal["process_marker", "circle", "underline", "text", "stamp"]
+    type: Literal["process_marker", "correct_mark", "circle", "underline", "text", "stamp"]
     comment: Optional[str] = Field(None, max_length=160)
     evidence_id: Optional[str] = Field(None, max_length=128)
 
@@ -68,6 +68,16 @@ class RecognizedContent(BaseModel):
     recognized_question: Optional[str] = Field(None, max_length=1_000)
     current_answer: Optional[str] = Field(None, max_length=1_000)
     erased_attempts: Optional[str] = Field(None, max_length=1_000)
+    observed_steps: list[str] = Field(default_factory=list, max_length=16)
+    solution_outline: list[str] = Field(default_factory=list, max_length=10)
+
+
+class AnswerEvaluation(BaseModel):
+    status: Literal["correct", "incorrect", "partial", "unknown"] = "unknown"
+    learner_answer: Optional[str] = Field(None, max_length=1_000)
+    expected_answer: Optional[str] = Field(None, max_length=1_000)
+    explanation: Optional[str] = Field(None, max_length=2_000)
+    confidence: UnitScore = 0
 
 
 class ProcessMetrics(BaseModel):
@@ -135,6 +145,21 @@ class AIRecognition(BaseModel):
     progress_quality: Literal["unknown", "starting", "partial", "mostly_correct"] = "unknown"
     confidence: UnitScore = 0
     uncertainties: list[str] = Field(default_factory=list, max_length=8)
+    answer_status: Literal["correct", "incorrect", "partial", "unknown"] = "unknown"
+    expected_answer: Optional[str] = Field(None, max_length=1_000)
+    answer_explanation: Optional[str] = Field(None, max_length=2_000)
+    answer_confidence: UnitScore = 0
+    answer_box_2d: Optional[Annotated[
+        list[NormalizedCoordinate], Field(min_length=4, max_length=4)
+    ]] = Field(None, description="[ymin, xmin, ymax, xmax] around the final answer in the process image")
+
+    @model_validator(mode="after")
+    def validate_answer_box(self):
+        if self.answer_box_2d is not None:
+            ymin, xmin, ymax, xmax = self.answer_box_2d
+            if ymax <= ymin or xmax <= xmin:
+                raise ValueError("answer_box_2d must have a positive width and height")
+        return self
 
 
 class AIPraisePoint(BaseModel):
@@ -146,7 +171,7 @@ class AIFeedback(BaseModel):
     """Small text-only schema generated after recognition and state estimation."""
 
     thought_type_badge: str = Field(min_length=1, max_length=80)
-    praise_points: list[AIPraisePoint] = Field(min_length=3, max_length=3)
+    praise_points: list[AIPraisePoint] = Field(min_length=3, max_length=4)
     encouragement_message: str = Field(min_length=1, max_length=1_000)
     summary: str = Field(min_length=1, max_length=2_000)
     hint_levels: list[str] = Field(default_factory=list, max_length=3)
@@ -157,6 +182,7 @@ class AnalysisRequest(BaseModel):
     questionText: Optional[str] = Field(None, max_length=5_000)
     praiseMode: Literal["super_praise", "support", "challenge"] = "support"
     feedbackCondition: Literal["process_praise", "neutral_summary"] = "process_praise"
+    experienceMode: Literal["product", "experiment"] = "product"
     strokes: list[StrokeSchema] = Field(min_length=1, max_length=10_000)
     image: str = Field(min_length=1, max_length=12_000_000)
     sourceImage: Optional[str] = Field(None, max_length=12_000_000)
@@ -176,6 +202,7 @@ class AnalysisResponse(BaseModel):
     praise_evidence: list[PraiseEvidence] = Field(default_factory=list, max_length=5)
     encouragement_message: Optional[str] = Field(None, max_length=1_000)
     recognized_content: Optional[RecognizedContent] = None
+    answer_evaluation: Optional[AnswerEvaluation] = None
     recognition_confidence: Optional[UnitScore] = None
     recognition_uncertainties: list[str] = Field(default_factory=list, max_length=8)
     skill_tags: list[str] = Field(default_factory=list, max_length=8)

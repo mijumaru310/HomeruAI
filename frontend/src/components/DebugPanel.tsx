@@ -2,7 +2,7 @@
 
 import React from "react";
 import { Bug, X } from "lucide-react";
-import type { LearnerDashboardData, LearnerState, PointerDiagnostics, ProcessMetrics } from "../types/canvas";
+import type { AnswerEvaluation, LearnerDashboardData, LearnerState, PointerDiagnostics, ProcessMetrics } from "../types/canvas";
 
 interface Props {
   learnerState?: LearnerState;
@@ -12,6 +12,7 @@ interface Props {
   analysisSource?: string;
   providerError?: string;
   recognitionConfidence?: number;
+  answerEvaluation?: AnswerEvaluation;
   strokeCount: number;
   imageCount: number;
   problemRegion?: { x: number; y: number; width: number; height: number };
@@ -56,6 +57,7 @@ export default function DebugPanel(props: Props) {
           <dt>分析経路</dt><dd>{props.analysisSource ?? "未分析"}</dd>
           <dt>障害分類</dt><dd>{props.providerError ?? "なし"}</dd>
           <dt>画像認識信頼度</dt><dd>{props.recognitionConfidence === undefined ? "—" : props.recognitionConfidence.toFixed(3)}</dd>
+          <dt>答えの判定</dt><dd>{props.answerEvaluation ? `${props.answerEvaluation.status} (${props.answerEvaluation.confidence.toFixed(3)})` : "未判定"}</dd>
           <dt>筆跡 / 画像</dt><dd>{props.strokeCount} / {props.imageCount}</dd>
           <dt>分析範囲</dt><dd>{props.problemRegion ? Object.values(props.problemRegion).map(v => v.toFixed(2)).join(", ") : "全体"}</dd>
         </dl>

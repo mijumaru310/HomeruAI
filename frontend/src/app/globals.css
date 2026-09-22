@@ -708,6 +708,18 @@ html, body {
 .praise-celebration-kicker { color: #9d174d; font-size: 12px; font-weight: 800; }
 .praise-celebration strong { color: #581c87; font-size: clamp(17px, 2.8vw, 22px); line-height: 1.4; }
 .praise-return-button { min-height: 48px; touch-action: manipulation; }
+.answer-evaluation { display: flex; flex-direction: column; gap: 7px; padding: 15px 16px; border: 1.5px solid; border-radius: 14px; font-size: 13px; line-height: 1.55; }
+.answer-evaluation-heading { display: flex; align-items: center; gap: 9px; font-size: 16px; }
+.answer-evaluation-correct { color: #166534; background: #f0fdf4; border-color: #86efac; box-shadow: 0 5px 18px #16a34a16; }
+.answer-evaluation-incorrect { color: #9a3412; background: #fff7ed; border-color: #fdba74; }
+.answer-evaluation-partial { color: #854d0e; background: #fefce8; border-color: #fde047; }
+.answer-evaluation-unknown { color: #475569; background: #f8fafc; border-color: #cbd5e1; }
+.answer-evaluation small { color: #64748b; line-height: 1.45; }
+.recognized-steps ol, .solution-outline ol { margin: 6px 0 0 20px; padding: 0; display: grid; gap: 4px; }
+.solution-outline summary { color: #6d28d9; cursor: pointer; font-weight: 700; }
+.content-analysis-card { display: flex; flex-direction: column; gap: 8px; padding: 15px 17px; border: 1.5px solid #bfdbfe; border-radius: 14px; background: #eff6ff; color: #1e3a8a; }
+.content-analysis-card > div { display: flex; align-items: center; gap: 7px; font-size: 14px; }
+.content-analysis-card p { margin: 0; color: #1e293b; font-size: 14px; line-height: 1.7; white-space: pre-wrap; }
 @keyframes praise-bloom { from { opacity: 0; transform: scale(.7) rotate(-20deg); } to { opacity: 1; transform: scale(1) rotate(0); } }
 @media (prefers-reduced-motion: reduce) { .praise-celebration-icon { animation: none; } }
 
