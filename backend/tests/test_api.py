@@ -57,7 +57,26 @@ class ApiTests(unittest.TestCase):
         body = response.json()
         self.assertEqual(body["source"], "local_fallback")
         self.assertEqual(body["process_metrics"]["stroke_count"], 1)
+        self.assertEqual(len(body["praise_points"]), 4)
+        self.assertEqual(body["answer_evaluation"]["status"], "unknown")
+
+    def test_experiment_mode_keeps_grading_and_enhanced_product_feedback_off(self):
+        response = self.client.post("/api/analyze", json={
+            "questionId": "q_02",
+            "experienceMode": "experiment",
+            "feedbackCondition": "process_praise",
+            "image": ONE_PIXEL_PNG,
+            "strokes": [{
+                "strokeId": "s-experiment", "type": "draw", "startTime": 1_000,
+                "endTime": 2_000, "points": [], "pointCount": 8,
+            }],
+        })
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertIsNone(body["answer_evaluation"])
         self.assertEqual(len(body["praise_points"]), 3)
+        self.assertNotIn("correct_mark", {item["type"] for item in body["annotations"]})
 
     def test_neutral_study_condition_has_no_praise_or_intervention(self):
         response = self.client.post("/api/analyze", json={

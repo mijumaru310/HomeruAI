@@ -178,9 +178,9 @@ interface Stroke {
 
 ### POST `/api/analyze`
 
-必須: `questionId`、1件以上の `strokes`、Ghost `image`。任意で `questionText`、`sourceImage`、`sourceType`、`analysisBounds`、`learnerId`、`sessionId`、`problemDifficulty`、`hintCount`、`feedbackCondition` を受け取る。`feedbackCondition=neutral_summary` は研究比較用で、称賛・紫の過程マーク・途中介入を行わず観測事実を評価語なしで要約する。AI文面に正答照合していない正誤断定が含まれる場合は採用せず、操作記録からの称賛に切り替える。
+必須: `questionId`、1件以上の `strokes`、Ghost `image`。任意で `questionText`、`sourceImage`、`sourceType`、`analysisBounds`、`learnerId`、`sessionId`、`problemDifficulty`、`hintCount`、`feedbackCondition`、`experienceMode` を受け取る。通常利用の `experienceMode=product` では、問題と途中式から模範解答を導出して現在の最終回答と照合する。実験用の `experienceMode=experiment` では正誤判定・答えの提示・正解丸を無効にし、adult-pilot-v1.3 の条件を維持する。`feedbackCondition=neutral_summary` は研究比較用で、称賛・紫の過程マーク・途中介入を行わず観測事実を評価語なしで要約する。称賛文に未検証の正誤断定が含まれる場合は採用せず、操作記録からの称賛に切り替える。
 
-応答には `praise_points`、`praise_evidence`、`recognized_content`、`recognition_confidence`、`process_metrics`、`process_evidence`、`learner_state`、`intervention`、`source`、`ai_provider`、`provider_error_category`、`notice` を含む。
+応答には `praise_points`、`praise_evidence`、`recognized_content`、`answer_evaluation`、`recognition_confidence`、`process_metrics`、`process_evidence`、`learner_state`、`intervention`、`source`、`ai_provider`、`provider_error_category`、`notice` を含む。`answer_evaluation` は `correct`、`incorrect`、`partial`、`unknown` のいずれかで、正解丸は画像認識と答え照合の両方が高信頼な `correct` の場合だけ返す。
 
 ### POST `/api/assist`
 
@@ -209,14 +209,14 @@ Gemini設定、構造化出力スキーマ互換性、ローカルフォール�
 - 研究者向け Debug パネルは、X1〜X4、生のプロセス特徴、認識確信度、分析元、Gemini失敗分類を確認できる。
 - Pointer Events の `pointerType`、筆圧、傾き、接触幅、合成イベント数を Debug パネルで確認できる。Apple Pencil入力中の指接触は描画終了として扱わず、パームリジェクションとして無視する。
 - `getCoalescedEvents()` が利用できる環境では、そのサンプルを筆跡へ取り込み、高速なPencil入力の欠落を減らす。
-- 筆記プロセスの根拠IDごとに、小さな紫のキラリ印を筆跡の横へ一つだけ描く。正誤判定をしていないため、解答を囲む丸や赤ペンは描かない。過去保存データの丸・花丸・下線・文字もキラリ印として再表示し、重複描画を防ぐ。称賛文はキャンバス上へ重ねずカードに表示する。
-- 称賛は固定能力・人格ラベルと誇張を避け、「観測した行動→学習上の意味」を具体的に伝え、次の行動の選択を本人へ残す。
+- 筆記プロセスの根拠IDごとに、小さな紫のキラリ印を筆跡の横へ一つだけ描く。通常モードで高信頼に正解と照合できたときだけ、最終回答を囲む赤丸を別種の注釈として描く。実験モードでは赤丸を描かない。過去保存データの丸・花丸・下線・文字はキラリ印として再表示し、重複描画を防ぐ。
+- 通常モードの振り返りには、AIが読み取った具体的な途中式、消去内容、模範的な解き方、照合理由を表示する。称賛は最大4件とし、可能な場合は実際の式・数値を引用して「観測した行動→学習上の意味」を伝える。固定能力・人格ラベルと誇張を避け、次の行動の選択を本人へ残す。
 
 ## 9. 障害時の挙動
 
 Gemini 呼び出しにはタイムアウトを設定する。主モデルの一時障害・割当制限・モデル不在では候補モデルを試す。認証や構造化出力の不整合は繰り返しても改善しないため再試行せず、即座にローカル分析へ移行する。
 
-認識だけ成功して文章化に失敗した場合は `hybrid` とし、認識結果とコード生成の称賛を返す。両方使えない場合も、記録された行動を根拠とする3件の称賛を返す。外部AIの失敗文を学習者向けの称賛に混ぜない。
+認識だけ成功して文章化に失敗した場合は `hybrid` とし、認識結果とコード生成の称賛を返す。両方使えない場合、通常モードは記録された行動を根拠とする4件、実験モードは従来どおり3件の称賛を返す。外部AIの失敗文を学習者向けの称賛に混ぜず、画像認識が失敗した場合は正誤を `unknown` として丸を描かない。
 
 ## 10. 研究データとプライバシー
 
@@ -295,6 +295,7 @@ backend\venv\Scripts\python.exe backend\scripts\train_support_model.py
 - Ghost Rendering、問題原本との二画像分析
 - 停止、再開、成功した書き直し、同領域反復の決定論的抽出
 - Gemini 構造化認識と根拠付き称賛、失敗分類、ローカルフォールバック
+- 通常モード限定の解答照合、照合理由、正解時の赤丸、具体的な途中式・消去内容を引用する強化称賛
 - 写真、PDF、白紙、テキスト問題、問題範囲切り出し
 - X1〜X4 状態推定、段階的ヒント、リアルタイム介入
 - IndexedDB 自動保存、擬似匿名イベント、SQLite保存、CSV出力、任意再学習

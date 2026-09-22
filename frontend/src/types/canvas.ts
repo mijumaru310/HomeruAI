@@ -43,11 +43,11 @@ export interface CanvasText {
   height?: number;
 }
 
-/** 筆記プロセスを見つけた位置。正誤判定ではない。 */
+/** 筆記プロセスの位置、または通常モードで検証済みの正解位置。 */
 export interface AIAnnotation {
   id: string;
   imageId: string;             // 紐づく画像のID
-  type: "process_marker" | "circle" | "underline" | "text" | "stamp";  // 後半は過去の保存データとの互換用
+  type: "process_marker" | "correct_mark" | "circle" | "underline" | "text" | "stamp";  // 後半は過去の保存データとの互換用
   // 画像相対座標 (0-1000 スケール) [ymin, xmin, ymax, xmax]
   box_2d: [number, number, number, number];
   comment?: string;            // 文字書き入れの内容
@@ -60,6 +60,16 @@ export interface RecognizedContent {
   recognized_question?: string;
   current_answer?: string;
   erased_attempts?: string;
+  observed_steps?: string[];
+  solution_outline?: string[];
+}
+
+export interface AnswerEvaluation {
+  status: "correct" | "incorrect" | "partial" | "unknown";
+  learner_answer?: string;
+  expected_answer?: string;
+  explanation?: string;
+  confidence: number;
 }
 
 export interface AnalysisResponseData {
@@ -68,6 +78,7 @@ export interface AnalysisResponseData {
   praise_points: string[];
   encouragement_message?: string;
   recognized_content?: RecognizedContent;
+  answer_evaluation?: AnswerEvaluation;
   summary?: string;
   source?: "ai" | "hybrid" | "local_fallback";
   provider_error_category?: "configuration" | "auth" | "quota" | "model" | "schema" | "timeout" | "temporary" | "network" | "unknown";
@@ -83,7 +94,7 @@ export interface AnalysisResponseData {
   analysis_id?: string;
   annotations: {
     box_2d: [number, number, number, number];
-    type: "process_marker" | "circle" | "underline" | "text" | "stamp";
+    type: "process_marker" | "correct_mark" | "circle" | "underline" | "text" | "stamp";
     comment?: string;
     evidence_id?: string;
   }[];

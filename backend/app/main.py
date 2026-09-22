@@ -91,6 +91,7 @@ async def analyze_strokes(request: AnalysisRequest):
             question_text=request.questionText,
             praise_mode=request.praiseMode,
             feedback_condition=request.feedbackCondition,
+            experience_mode=request.experienceMode,
             source_image_b64=request.sourceImage,
             source_type=request.sourceType,
             analysis_bounds=request.analysisBounds,

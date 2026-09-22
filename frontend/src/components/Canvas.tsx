@@ -343,9 +343,32 @@ export default function Canvas({
         const [ymin, xmin, ymax, xmax] = ann.box_2d;
         const x1 = imgX + (xmin / 1000) * imgWidth; const y1 = imgY + (ymin / 1000) * imgHeight;
         const x2 = imgX + (xmax / 1000) * imgWidth; const y2 = imgY + (ymax / 1000) * imgHeight;
-        // These marks locate a *process* observation, never a checked answer.
-        // Render even legacy circle/stamp data as a small purple sparkle beside
-        // the writing, rather than a grading circle around the answer.
+        if (ann.type === "correct_mark") {
+          // Only the normal product mode can create this type, and only after
+          // a high-confidence answer comparison. Keep it distinct from the
+          // purple process markers used for praise.
+          const pad = 14 / zoom;
+          const centerX = (x1 + x2) / 2;
+          const centerY = (y1 + y2) / 2;
+          const radiusX = Math.max((x2 - x1) / 2 + pad, 22 / zoom);
+          const radiusY = Math.max((y2 - y1) / 2 + pad, 18 / zoom);
+          ctx.save();
+          ctx.strokeStyle = ann.color || "#ef4444";
+          ctx.lineWidth = 4 / zoom;
+          ctx.lineCap = "round";
+          ctx.beginPath();
+          ctx.ellipse(centerX, centerY, radiusX, radiusY, -0.06, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.globalAlpha = 0.5;
+          ctx.lineWidth = 1.5 / zoom;
+          ctx.beginPath();
+          ctx.ellipse(centerX + 1 / zoom, centerY - 1 / zoom, radiusX + 2 / zoom, radiusY - 1 / zoom, 0.04, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.restore();
+          return;
+        }
+        // Process observations remain small purple sparkles beside the writing.
+        // Legacy circle/stamp data is also treated as a process marker.
         const size = 10 / zoom;
         const gap = 17 / zoom;
         const viewLeft = -pan.x / zoom;

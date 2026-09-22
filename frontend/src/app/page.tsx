@@ -7,7 +7,7 @@ import ProblemRegionSelector, { NormalizedRegion } from "../components/ProblemRe
 import LearningDashboard from "../components/LearningDashboard";
 import ModalLayer from "../components/ModalLayer";
 import DebugPanel from "../components/DebugPanel";
-import { Stroke, CanvasImage, CanvasText, AIAnnotation, RecognizedContent, AnalysisResponseData, ProcessMetrics, LearnerState, AdaptiveIntervention, LearnerDashboardData, PointerDiagnostics } from "../types/canvas";
+import { Stroke, CanvasImage, CanvasText, AIAnnotation, RecognizedContent, AnswerEvaluation, AnalysisResponseData, ProcessMetrics, LearnerState, AdaptiveIntervention, LearnerDashboardData, PointerDiagnostics } from "../types/canvas";
 import { jsPDF } from "jspdf";
 import { 
   PenTool, Eraser, Sparkles, Trash2, 
@@ -50,6 +50,7 @@ interface PageData {
   praisePoints?: string[];
   encouragementMessage?: string;
   recognizedContent?: RecognizedContent;
+  answerEvaluation?: AnswerEvaluation;
   aiSummary?: string;
   analysisSource?: "ai" | "hybrid" | "local_fallback";
   analysisNotice?: string;
@@ -1246,7 +1247,7 @@ export default function Home() {
     
     setIsAnalyzing(true);
     setAnalysisError(null);
-    updateActivePage(p => ({ ...p, aiAnnotations: [] }));
+    updateActivePage(p => ({ ...p, aiAnnotations: [], answerEvaluation: undefined }));
     
     try {
       const refImage = activePage.images.length > 0 ? activePage.images[0] : null;
@@ -1284,6 +1285,7 @@ export default function Home() {
         questionText: activePage.questionText || undefined,
         praiseMode: praiseMode,
         feedbackCondition: currentFeedbackCondition,
+        experienceMode: isExperiment ? "experiment" : "product",
         learnerId: learnerIdRef.current,
         sessionId: sessionIdRef.current,
         sourceType: activePage.sourceType ?? (refImage ? "photo" : activePage.questionText ? "typed" : "blank"),
@@ -1362,7 +1364,7 @@ export default function Home() {
       const bounds = ghostResult.virtualBounds;
       const imgId = targetImage ? targetImage.id : "canvas_base";
 
-      const allowedAnnotationTypes = new Set(["process_marker", "circle", "underline", "text", "stamp"] as const);
+      const allowedAnnotationTypes = new Set(["process_marker", "correct_mark", "circle", "underline", "text", "stamp"] as const);
       const annotations: AIAnnotation[] = (Array.isArray(result.annotations) ? result.annotations : []).flatMap((mark, i) => {
         if (!Array.isArray(mark.box_2d) || mark.box_2d.length !== 4 || !allowedAnnotationTypes.has(mark.type)) return [];
         let box = mark.box_2d.map(value => Math.max(0, Math.min(1000, Math.round(Number(value))))) as [number, number, number, number];
@@ -1382,7 +1384,7 @@ export default function Home() {
           type: mark.type,
           box_2d: box,
           comment: mark.comment || undefined,
-          color: "#7c3aed",
+          color: mark.type === "correct_mark" ? "#ef4444" : "#7c3aed",
           virtualBounds: targetImage ? undefined : bounds,
           evidenceId: mark.evidence_id,
         }];
@@ -1395,6 +1397,7 @@ export default function Home() {
         praisePoints: result.praise_points || [],
         encouragementMessage: result.encouragement_message || "",
         recognizedContent: result.recognized_content,
+        answerEvaluation: isExperiment ? undefined : result.answer_evaluation,
         aiSummary: result.summary,
         analysisSource: result.source,
         analysisNotice: result.notice,
@@ -1745,6 +1748,7 @@ export default function Home() {
                   analysisSource={activePage.analysisSource}
                   providerError={activePage.providerErrorCategory}
                   recognitionConfidence={activePage.recognitionConfidence}
+                  answerEvaluation={activePage.answerEvaluation}
                   strokeCount={activePage.strokes.length}
                   imageCount={activePage.images.length}
                   problemRegion={activePage.problemRegion}
@@ -1909,10 +1913,34 @@ export default function Home() {
                       </p>
                     </div>
 
-                    <div className="answer-verification-note" role="note">
-                      <strong>答えの正誤は判定していません</strong>
-                      <span>{activePage.feedbackCondition === "neutral_summary" ? "ここには記録された操作の要約を表示しています。" : "紫の印と称賛は、筆記・見直しなどの過程に対するものです。正解の丸ではありません。"}</span>
-                    </div>
+                    {isExperiment ? (
+                      <div className="answer-verification-note" role="note">
+                        <strong>答えの正誤は判定していません</strong>
+                        <span>{activePage.feedbackCondition === "neutral_summary" ? "ここには記録された操作の要約を表示しています。" : "紫の印と称賛は、筆記・見直しなどの過程に対するものです。正解の丸ではありません。"}</span>
+                      </div>
+                    ) : activePage.answerEvaluation ? (
+                      <div className={`answer-evaluation answer-evaluation-${activePage.answerEvaluation.status}`} role="status">
+                        <div className="answer-evaluation-heading">
+                          <span aria-hidden="true">{activePage.answerEvaluation.status === "correct" ? "⭕" : activePage.answerEvaluation.status === "incorrect" ? "🔎" : activePage.answerEvaluation.status === "partial" ? "✍️" : "💭"}</span>
+                          <strong>
+                            {activePage.answerEvaluation.status === "correct" ? "正解！ 考えた過程までしっかり届いたね" :
+                              activePage.answerEvaluation.status === "incorrect" ? "答えを一緒に確かめよう" :
+                              activePage.answerEvaluation.status === "partial" ? "途中までの考えを読み取れたよ" :
+                              "答えの判定はできなかったけれど、過程は見つけたよ"}
+                          </strong>
+                        </div>
+                        {activePage.answerEvaluation.status === "correct" && <span>読み取った答えが問題の答えと一致しました。ノート上の答えに赤い丸を付けています。</span>}
+                        {activePage.answerEvaluation.learner_answer && <span><b>読み取った答え：</b>{activePage.answerEvaluation.learner_answer}</span>}
+                        {activePage.answerEvaluation.expected_answer && <span><b>答え・確認結果：</b>{activePage.answerEvaluation.expected_answer}</span>}
+                        {activePage.answerEvaluation.explanation && <span><b>照合した内容：</b>{activePage.answerEvaluation.explanation}</span>}
+                        <small>画像から読み取ったAIの判定です。文字の読み違いがある場合は問題文を修正して再分析できます。</small>
+                      </div>
+                    ) : (
+                      <div className="answer-verification-note" role="note">
+                        <strong>今回は答えを判定できませんでした</strong>
+                        <span>筆記・消去・再開の過程は、そのまま振り返りと称賛に使っています。</span>
+                      </div>
+                    )}
 
                     {activePage.feedbackCondition !== "neutral_summary" && <div className="praise-celebration" aria-label="記録から見つけた一歩">
                       <span className="praise-celebration-icon" aria-hidden="true"><Sparkles size={36} /></span>
@@ -2000,6 +2028,13 @@ export default function Home() {
                       </div>
                     )}
 
+                    {!isExperiment && activePage.aiSummary && (
+                      <div className="content-analysis-card">
+                        <div><FileText size={19} /><strong>書いた内容をこう分析しました</strong></div>
+                        <p>{activePage.aiSummary}</p>
+                      </div>
+                    )}
+
                     {/* AI問題・文字認識の確認 */}
                     {!isExperiment && activePage.recognizedContent && (
                       <div style={{ fontSize: "12px", color: "#64748b", backgroundColor: "#f8fafc", padding: "12px 14px", borderRadius: "10px", border: "1px solid #e2e8f0", display: "flex", flexDirection: "column", gap: "6px" }}>
@@ -2009,12 +2044,28 @@ export default function Home() {
                           </div>
                         )}
                         <div>
-                          <strong>✍️ 読み取り候補（正誤未確認）:</strong> {activePage.recognizedContent.current_answer || "手書き解答"}
+                          <strong>✍️ AIが読み取った現在の筆記:</strong> {activePage.recognizedContent.current_answer || "手書き解答"}
                         </div>
+                        {activePage.recognizedContent.observed_steps && activePage.recognizedContent.observed_steps.length > 0 && (
+                          <div className="recognized-steps">
+                            <strong>🧠 読み取った解き方:</strong>
+                            <ol>
+                              {activePage.recognizedContent.observed_steps.map((step, index) => <li key={`${index}-${step}`}>{step}</li>)}
+                            </ol>
+                          </div>
+                        )}
                         {activePage.recognizedContent.erased_attempts && activePage.recognizedContent.erased_attempts !== "なし" && (
                           <div style={{ color: "#e11d48" }}>
-                            <strong>💡 消去した試行錯誤:</strong> {activePage.recognizedContent.erased_attempts}
+                            <strong>💡 消した部分から見えた試行錯誤:</strong> {activePage.recognizedContent.erased_attempts}
                           </div>
+                        )}
+                        {activePage.recognizedContent.solution_outline && activePage.recognizedContent.solution_outline.length > 0 && (
+                          <details className="solution-outline">
+                            <summary>AIが照合に使った解き方を見る</summary>
+                            <ol>
+                              {activePage.recognizedContent.solution_outline.map((step, index) => <li key={`${index}-${step}`}>{step}</li>)}
+                            </ol>
+                          </details>
                         )}
                         {activePage.recognitionConfidence !== undefined && activePage.recognitionConfidence < 0.7 && (
                           <div style={{ color: "#92400e", background: "#fffbeb", borderRadius: "7px", padding: "7px" }}>
