@@ -16,6 +16,8 @@ export interface Stroke {
   isErased?: boolean; // Logical deletion flag
   erasedAt?: number;  // Timestamp when it was erased
   targetStrokeIds?: string[]; // If type: "erase", records which stroke IDs this erase stroke deleted
+  inputType?: "pen" | "touch" | "mouse" | "unknown"; // Absent on older notes.
+  inputMode?: "finger" | "pen"; // Metadata only, not an ability/motivation score.
 }
 
 export interface CanvasImage {
@@ -186,6 +188,8 @@ export interface LearnerDashboardData {
 }
 
 export interface PointerDiagnostics {
+  inputMode?: "finger" | "pen" | "unselected";
+  inputReason?: string;
   pointerType: "pen" | "touch" | "mouse" | "unknown";
   pressure: number;
   tiltX: number;

@@ -1,4 +1,14 @@
-import { Stroke } from "../types/canvas";
+import type { Stroke } from "../types/canvas";
+
+/** Apply an eraser only when its owning pointer commits, never during a gesture. */
+export function commitStrokeAction(strokes: Stroke[], stroke: Stroke, timestamp: number, eraseTimes?: ReadonlyMap<string, number>): Stroke[] {
+  const targetIds = new Set(stroke.targetStrokeIds ?? []);
+  const next = stroke.type === "erase"
+    ? strokes.map(item => item.type === "draw" && !item.isErased && targetIds.has(item.strokeId)
+      ? { ...item, isErased: true, erasedAt: eraseTimes?.get(item.strokeId) ?? timestamp } : item)
+    : strokes;
+  return [...next, { ...stroke, endTime: timestamp }];
+}
 
 /**
  * 最後の筆記操作を履歴として残したまま取り消す。
