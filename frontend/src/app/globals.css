@@ -938,6 +938,14 @@ html, body {
   -webkit-user-select: text;
 }
 
+.input-mode-control { display: flex; flex: 0 0 auto; align-items: center; flex-wrap: wrap; gap: 4px 12px; padding: 5px 10px; border-bottom: 1px solid #e2e8f0; background: #faf8ff; }
+.input-mode-buttons { display: flex; gap: 6px; }
+.input-mode-buttons button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 44px; padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 8px; color: #334155; background: #fff; font: inherit; font-size: 13px; cursor: pointer; }
+.input-mode-buttons button[aria-pressed="true"] { border-color: #7c3aed; background: #ede9fe; color: #5b21b6; font-weight: 700; }
+.input-mode-buttons button:focus-visible { outline: 3px solid #7c3aed; outline-offset: 2px; }
+.input-mode-control p { flex: 1 1 220px; margin: 0; font-size: 12px; line-height: 1.4; color: #475569; }
+@media (max-width: 600px) { .input-mode-control { gap: 3px; } .input-mode-control p { flex-basis: 100%; font-size: 11px; } }
+
 .debug-panel header { display: flex; align-items: center; justify-content: space-between; color: #9a3412; font-weight: 900; }
 .debug-panel header span { display: flex; align-items: center; gap: 6px; }
 .debug-panel header button { border: 0; background: transparent; color: inherit; cursor: pointer; }

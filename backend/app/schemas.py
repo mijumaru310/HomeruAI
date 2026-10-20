@@ -29,6 +29,8 @@ class StrokeSchema(BaseModel):
     isErased: bool = False
     erasedAt: Optional[int] = Field(None, ge=0)
     targetStrokeIds: Optional[list[str]] = Field(None, max_length=10_000)
+    inputType: Optional[Literal["pen", "touch", "mouse", "unknown"]] = None
+    inputMode: Optional[Literal["finger", "pen"]] = None
 
     @model_validator(mode="after")
     def validate_timestamps(self):

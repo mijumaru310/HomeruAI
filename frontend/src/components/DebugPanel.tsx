@@ -38,14 +38,16 @@ export default function DebugPanel(props: Props) {
         </dl>
       </section>
       <section>
-        <h3>Apple Pencil / Pointer</h3>
+        <h3>指・ペン / Pointer</h3>
         <dl>
+          <dt>入力モード</dt><dd>{props.pointer.inputMode ?? "unselected"}</dd>
+          <dt>振り分け理由</dt><dd>{props.pointer.inputReason ?? "—"}</dd>
           <dt>入力種別</dt><dd>{props.pointer.pointerType}</dd>
           <dt>筆圧</dt><dd>{props.pointer.pressure.toFixed(3)}</dd>
           <dt>傾き X / Y</dt><dd>{props.pointer.tiltX}° / {props.pointer.tiltY}°</dd>
           <dt>接触サイズ</dt><dd>{props.pointer.width.toFixed(1)} × {props.pointer.height.toFixed(1)}</dd>
           <dt>共同サンプル</dt><dd>{props.pointer.coalescedSamples}</dd>
-          <dt>無視した手のひら</dt><dd>{props.pointer.palmTouchesIgnored}</dd>
+          <dt>無視した指接触</dt><dd>{props.pointer.palmTouchesIgnored}</dd>
         </dl>
         <div className={`pencil-status ${props.pointer.pointerType === "pen" ? "ok" : ""}`}>
           {props.pointer.pointerType === "pen" ? "Apple Pencil互換のペン入力を検出" : "ペンで一画書くと入力状態を確認できます"}

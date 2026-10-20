@@ -2,6 +2,8 @@
 
 import React, { useState, useRef, useCallback, useEffect } from "react";
 import Canvas from "../components/Canvas";
+import InputModeControl from "../components/InputModeControl";
+import { useCanvasInputMode } from "../hooks/useCanvasInputMode";
 import ReplayPlayer from "../components/ReplayPlayer";
 import ProblemRegionSelector, { NormalizedRegion } from "../components/ProblemRegionSelector";
 import LearningDashboard from "../components/LearningDashboard";
@@ -541,6 +543,7 @@ export default function Home() {
   const [showProblemRegionSelector, setShowProblemRegionSelector] = useState<boolean>(false);
   const [showDashboard, setShowDashboard] = useState(false);
   const [showDebug, setShowDebug] = useState(false);
+  const { inputMode, changeInputMode, notice: inputModeNotice, requestChoice: requestInputModeChoice } = useCanvasInputMode();
   const [customProblemTitle, setCustomProblemTitle] = useState<string>("");
   const [customProblemText, setCustomProblemText] = useState<string>("");
   const [placeCustomTextOnCanvas, setPlaceCustomTextOnCanvas] = useState<boolean>(true);
@@ -1321,7 +1324,9 @@ export default function Home() {
             width: s.width,
             isErased: s.isErased || false,
             erasedAt: s.erasedAt,
-            targetStrokeIds: s.targetStrokeIds
+            targetStrokeIds: s.targetStrokeIds,
+            inputType: s.inputType,
+            inputMode: s.inputMode,
           };
         }),
         image: processImage,
@@ -1712,6 +1717,7 @@ export default function Home() {
         {activePage.skippedAt ? "この問題は筆記なしで記録しました。次の問題へ進めます。" : experimentLocked ? activePage.feedbackCondition === "neutral_summary" ? "振り返りを確認したら、次へ進んでください。" : "紫の印は取り組みの記録です。正解の丸ではありません。準備ができたら次へ進んでください。" : "下のノートに書いてください。途中まででも大丈夫。書いたら右上の「振り返る」を押します。"}
       </section>}
       {!isExperiment && showDashboard && <LearningDashboard data={dashboard} loading={dashboardLoading} onClose={() => setShowDashboard(false)} />}
+      {!isExperiment && <InputModeControl mode={inputMode} notice={inputModeNotice} onChange={changeInputMode} />}
       <div className="onenote-container">
         {isExperiment ? <>
           <aside className="section-sidebar experiment-section-sidebar" aria-label="調査ノート"><div className="sidebar-add-btn">固定のノート</div><ul className="sidebar-list"><li className="section-item active">調査ノート</li></ul></aside>
@@ -1738,13 +1744,16 @@ export default function Home() {
                 isReplaying={isReplaying || experimentLocked} initialPan={pageTransforms[activePageId]?.pan || { x: 0, y: 0 }} initialZoom={pageTransforms[activePageId]?.zoom || 1}
                 onTransformChange={(newPan, newZoom) => { setPageTransforms(previous => ({ ...previous, [activePageId]: { pan: newPan, zoom: newZoom } })); }}
                 onPointerDiagnostics={!isExperiment && showDebug ? setPointerDiagnostics : undefined}
+                inputMode={isExperiment ? "pen" : inputMode}
+                onInputModeChange={isExperiment ? undefined : changeInputMode}
+                onInputModeRequired={isExperiment ? undefined : requestInputModeChoice}
               />
               {!isExperiment && showDebug && (
                 <DebugPanel
                   learnerState={activePage.learnerState}
                   dashboard={dashboard}
                   metrics={activePage.processMetrics}
-                  pointer={pointerDiagnostics}
+                  pointer={{ ...pointerDiagnostics, inputMode: inputMode ?? "unselected" }}
                   analysisSource={activePage.analysisSource}
                   providerError={activePage.providerErrorCategory}
                   recognitionConfidence={activePage.recognitionConfidence}

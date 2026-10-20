@@ -3,7 +3,8 @@
 import React, { useRef, useEffect, useState, useCallback } from "react";
 import { getStroke } from "perfect-freehand";
 import { Stroke, CanvasImage, CanvasText, AIAnnotation, PointerDiagnostics } from "../types/canvas";
-import { undoLastStrokeAction } from "../utils/strokeHistory";
+import { commitStrokeAction, undoLastStrokeAction } from "../utils/strokeHistory";
+import { CanvasInputRouter, normalizePointerType, type CanvasInputMode } from "../utils/canvasInput";
 
 interface CanvasProps {
   strokes: Stroke[];
@@ -33,6 +34,9 @@ interface CanvasProps {
   initialZoom: number;
   onTransformChange?: (pan: { x: number; y: number }, zoom: number) => void;
   onPointerDiagnostics?: (diagnostics: PointerDiagnostics) => void;
+  inputMode?: CanvasInputMode | null;
+  onInputModeChange?: (mode: CanvasInputMode, fromPen?: boolean) => void;
+  onInputModeRequired?: () => void;
 }
 
 const isPointInPolygon = (point: { x: number; y: number }, polygon: { x: number; y: number }[]): boolean => {
@@ -56,6 +60,7 @@ export default function Canvas({
   brushColor, brushWidth, eraserWidth,
   textStyle,
   isReplaying, initialPan, initialZoom, onTransformChange, onPointerDiagnostics,
+  inputMode = "pen", onInputModeChange, onInputModeRequired,
 }: CanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -113,14 +118,16 @@ export default function Canvas({
   const transformInitialRef = useRef<{ x: number; y: number; w: number; h: number; r: number; cx: number; cy: number; } | null>(null);
   const transformCurrentRef = useRef<{ x: number; y: number; w: number; h: number; r: number; } | null>(null);
 
-  const activePointersRef = useRef<Map<number, { clientX: number; clientY: number }>>(new Map());
+  const inputRouterRef = useRef(new CanvasInputRouter());
   const pinchStartDistRef = useRef<number | null>(null);
   const pinchStartZoomRef = useRef<number | null>(null);
   const isPanningRef = useRef(false);
   const lastPanPosRef = useRef<{ x: number; y: number } | null>(null);
   const activePointerIdRef = useRef<number | null>(null);
-  const activeDrawingPointerTypeRef = useRef<string | null>(null);
-  const ignoredPalmTouchesRef = useRef(0);
+  const activeToolRef = useRef(tool);
+  const erasedPreviewIdsRef = useRef(new Set<string>());
+  const pendingEraseTimesRef = useRef(new Map<string, number>());
+  const textOpenedByPointerRef = useRef(false);
   const lastDiagnosticsAtRef = useRef(0);
   
   const spacePressedRef = useRef(false);
@@ -142,6 +149,8 @@ export default function Canvas({
     if (!force && now - lastDiagnosticsAtRef.current < 80) return;
     lastDiagnosticsAtRef.current = now;
     onPointerDiagnostics({
+      inputMode: inputRouterRef.current.mode ?? "unselected",
+      inputReason: inputRouterRef.current.reason,
       pointerType: event.pointerType === "pen" || event.pointerType === "touch" || event.pointerType === "mouse" ? event.pointerType : "unknown",
       pressure: Number.isFinite(event.pressure) ? event.pressure : 0,
       tiltX: Number.isFinite(event.tiltX) ? event.tiltX : 0,
@@ -149,7 +158,7 @@ export default function Canvas({
       width: Number.isFinite(event.width) ? event.width : 0,
       height: Number.isFinite(event.height) ? event.height : 0,
       coalescedSamples,
-      palmTouchesIgnored: ignoredPalmTouchesRef.current,
+      palmTouchesIgnored: inputRouterRef.current.ignoredTouches,
       updatedAt: now,
     });
   };
@@ -186,14 +195,6 @@ export default function Canvas({
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => setDpr(window.devicePixelRatio || 1));
     return () => window.cancelAnimationFrame(frame);
-  }, []);
-
-  useEffect(() => {
-    const el = containerRef.current; if (!el) return;
-    const blockTouch = (e: TouchEvent) => { if (e.touches.length < 2) e.preventDefault(); };
-    el.addEventListener("touchstart", blockTouch, { passive: false });
-    el.addEventListener("touchmove", blockTouch, { passive: false });
-    return () => { el.removeEventListener("touchstart", blockTouch); el.removeEventListener("touchmove", blockTouch); };
   }, []);
 
   const drawImmediate = useCallback(() => {
@@ -257,7 +258,7 @@ export default function Canvas({
       offCtx.setTransform(zoom * currentDpr, 0, 0, zoom * currentDpr, pan.x * currentDpr, pan.y * currentDpr);
       const renderStroke = (stroke: Stroke, isCurrentStroke = false) => {
         if (!stroke || !stroke.points || !Array.isArray(stroke.points)) return;
-        if (stroke.isErased) return;
+        if (stroke.isErased || erasedPreviewIdsRef.current.has(stroke.strokeId)) return;
         if (stroke.type === "erase" || stroke.type === "pixel-erase") {
           if (stroke.type === "pixel-erase") {
             const pts = stroke.points.map(p => [p.x, p.y, p.p] as [number, number, number]);
@@ -477,75 +478,113 @@ export default function Canvas({
     });
   }, [setTexts]);
 
+  const cancelInteraction = useCallback(() => {
+    currentStrokeRef.current = null;
+    isDrawingRef.current = false;
+    activePointerIdRef.current = null;
+    erasedPreviewIdsRef.current.clear();
+    pendingEraseTimesRef.current.clear();
+    lassoPointsRef.current = [];
+    isDraggingSelectionRef.current = false;
+    dragStartWorldRef.current = null;
+    dragOffsetRef.current = { x: 0, y: 0 };
+    transformModeRef.current = null;
+    transformInitialRef.current = null;
+    transformCurrentRef.current = null;
+    isPanningRef.current = false;
+    lastPanPosRef.current = null;
+    pinchStartDistRef.current = null;
+    pinchStartZoomRef.current = null;
+    if (textOpenedByPointerRef.current) setTextInput(null);
+    textOpenedByPointerRef.current = false;
+    requestDraw();
+  }, [requestDraw]);
+
+  useEffect(() => {
+    if (inputRouterRef.current.mode !== inputMode) {
+      inputRouterRef.current.changeMode(inputMode);
+      cancelInteraction();
+    }
+  }, [inputMode, cancelInteraction]);
+
+  useEffect(() => {
+    if (isReplaying) {
+      inputRouterRef.current.reset();
+      cancelInteraction();
+    }
+  }, [isReplaying, cancelInteraction]);
+
+  useEffect(() => {
+    const interrupt = () => { inputRouterRef.current.reset(); cancelInteraction(); };
+    const onVisibilityChange = () => { if (document.hidden) interrupt(); };
+    window.addEventListener("blur", interrupt);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.removeEventListener("blur", interrupt);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [cancelInteraction]);
+
   const performObjectErasing = (worldPos: { x: number; y: number }, activeEraser: Stroke) => {
     const threshold = (eraserWidthRef.current / 2) / zoomRef.current + 8;
     const dist2 = (a: { x: number; y: number }, b: { x: number; y: number }) => Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2);
     
-    const nextStrokes = strokesRef.current.map(s => {
-      if (s.type !== "draw" || s.isErased) return s;
+    for (const s of strokesRef.current) {
+      if (s.type !== "draw" || s.isErased) continue;
       if (s.points.some(pt => dist2(worldPos, pt) < threshold)) {
         if (activeEraser.targetStrokeIds && !activeEraser.targetStrokeIds.includes(s.strokeId)) activeEraser.targetStrokeIds.push(s.strokeId);
-        if (activeEraser.type === "pixel-erase") return s;
-        return { ...s, isErased: true, erasedAt: Date.now() };
+        if (activeEraser.type === "erase") {
+          erasedPreviewIdsRef.current.add(s.strokeId);
+          if (!pendingEraseTimesRef.current.has(s.strokeId)) pendingEraseTimesRef.current.set(s.strokeId, Date.now());
+        }
       }
-      return s;
-    });
-    strokesRef.current = nextStrokes;
-    setStrokes(nextStrokes);
+    }
   };
 
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (isReplayingRef.current) return;
     const canvas = canvasRef.current;
 
-    // Apple Pencil描画中のtouchは手のひらとして無視する。ストロークを
-    // 途中確定しないことが、iPadで自然に書けるために重要。
-    if (e.pointerType === "touch" && isDrawingRef.current && activeDrawingPointerTypeRef.current === "pen") {
-      ignoredPalmTouchesRef.current += 1;
-      reportPointer(e, 1, true);
-      return;
-    }
+    const mousePan = e.pointerType === "mouse" && (spacePressedRef.current || e.button === 1 || e.button === 2);
+    const decision = inputRouterRef.current.down(e, mousePan);
     try { if (canvas) canvas.setPointerCapture(e.pointerId); } catch {}
+    if (decision.cancel) {
+      cancelInteraction();
+      onTransformChange?.(panRef.current, zoomRef.current);
+    }
+    if (e.pointerType === "pen" && decision.action === "edit") {
+      // Touches already on the screen remain blocked, including after pen-up.
+      isPanningRef.current = false;
+      lastPanPosRef.current = null;
+      pinchStartDistRef.current = null;
+      pinchStartZoomRef.current = null;
+    }
+    if (decision.penDetected) onInputModeChange?.("pen", true);
     reportPointer(e, 1, true);
+    if (decision.action === "choose") { onInputModeRequired?.(); return; }
+    if (decision.action === "ignore") return;
 
     const rect = canvas?.getBoundingClientRect() ?? new DOMRect();
     const sx = e.clientX, sy = e.clientY;
     const wp = screenToWorld(sx, sy, rect);
 
-    // 🌟 iPadの指は「必ず」移動・拡大縮小になる
-    if (e.pointerType === "touch") {
-      activePointersRef.current.set(e.pointerId, { clientX: sx, clientY: sy });
-      
-      // 描画中に指が触れたら、描画を強制セーブして中断する
-      if (isDrawingRef.current && currentStrokeRef.current) {
-        const finalStroke = { ...currentStrokeRef.current, endTime: Date.now() };
-        strokesRef.current = [...strokesRef.current, finalStroke];
-        setStrokes(prev => [...prev, finalStroke]);
-        isDrawingRef.current = false; currentStrokeRef.current = null; activePointerIdRef.current = null; activeDrawingPointerTypeRef.current = null;
-      }
-      
-      if (activePointersRef.current.size === 2) {
-        isPanningRef.current = false;
-        const pts = Array.from(activePointersRef.current.values());
-        pinchStartDistRef.current = Math.hypot(pts[0].clientX - pts[1].clientX, pts[0].clientY - pts[1].clientY);
-        pinchStartZoomRef.current = zoomRef.current;
-        return;
-      }
-      
-      if (activePointersRef.current.size === 1) {
-        isPanningRef.current = true;
-        lastPanPosRef.current = { x: sx, y: sy };
-        return;
-      }
-      return; // 指の場合はここで完全終了（ツールを使わせない）
+    if (decision.action === "gesture") {
+      isPanningRef.current = false;
+      const pts = inputRouterRef.current.navigationPoints();
+      pinchStartDistRef.current = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+      pinchStartZoomRef.current = zoomRef.current;
+      lastPanPosRef.current = { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 };
+      return;
     }
-
-    // 🌟 PCの「スペースキー＋クリック」「右クリック」「中クリック」で移動
-    if (spacePressedRef.current || (e.pointerType === "mouse" && (e.button === 1 || e.button === 2))) {
+    if (decision.action === "pan") {
       isPanningRef.current = true; 
       lastPanPosRef.current = { x: sx, y: sy }; 
       return;
     }
+
+    // Every editing tool (including selection and text) has the same owner.
+    activePointerIdRef.current = e.pointerId;
+    activeToolRef.current = toolRef.current;
 
     if (toolRef.current === "select" || toolRef.current === "lasso") {
       if (textInput) commitTextInput(true);
@@ -606,6 +645,7 @@ export default function Canvas({
     }
 
     if (toolRef.current === "text") {
+      textOpenedByPointerRef.current = true;
       commitTextInput(true);
       const tmpCtx = canvasRef.current?.getContext("2d"); let found = false;
       for (const txt of textsRef.current) {
@@ -619,19 +659,11 @@ export default function Canvas({
       return;
     }
 
-    // ★ マウスの左クリック、またはApple Pencilのみ描画できる
-    if (e.button === 0 || e.pointerType === "pen") {
+    if (decision.action === "edit") {
       commitTextInput(true);
-
-      if (isDrawingRef.current && currentStrokeRef.current) {
-        const finalStroke = { ...currentStrokeRef.current, endTime: Date.now() };
-        strokesRef.current = [...strokesRef.current, finalStroke];
-        setStrokes(prev => [...prev, finalStroke]);
-      }
 
       isDrawingRef.current = true;
       activePointerIdRef.current = e.pointerId;
-      activeDrawingPointerTypeRef.current = e.pointerType;
       
       const pressure = e.pointerType === "pen" ? e.pressure : 0.5;
       const now = Date.now();
@@ -639,6 +671,8 @@ export default function Canvas({
       if (toolRef.current === "eraser") strokeType = eraserModeRef.current === "pixel" ? "pixel-erase" : "erase";
       
       currentStrokeRef.current = { strokeId: `${strokeType[0]}_${now}_${Math.random().toString(36).substr(2, 9)}`, type: strokeType, startTime: now, endTime: now, points: [{ x: wp.x, y: wp.y, p: pressure, t: 0 }], color: strokeType === "draw" ? brushColorRef.current : undefined, width: strokeType === "draw" ? brushWidthRef.current : eraserWidthRef.current, targetStrokeIds: strokeType !== "draw" ? [] : undefined };
+      currentStrokeRef.current.inputType = normalizePointerType(e.pointerType);
+      if (inputRouterRef.current.mode) currentStrokeRef.current.inputMode = inputRouterRef.current.mode;
       pointerPosRef.current = { x: sx - rect.left, y: sy - rect.top };
       
       if (strokeType === "erase" || strokeType === "pixel-erase") performObjectErasing(wp, currentStrokeRef.current);
@@ -648,6 +682,8 @@ export default function Canvas({
   };
 
   const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const role = inputRouterRef.current.move(e);
+    if (role === "blocked") return;
     const rect = canvasRef.current?.getBoundingClientRect() ?? new DOMRect();
     const sx = e.clientX, sy = e.clientY; const wp = screenToWorld(sx, sy, rect);
     pointerPosRef.current = { x: sx - rect.left, y: sy - rect.top };
@@ -656,26 +692,32 @@ export default function Canvas({
       : [];
     reportPointer(e, Math.max(1, coalesced.length));
 
-    if (e.pointerType === "touch" && activePointersRef.current.has(e.pointerId)) {
-      activePointersRef.current.set(e.pointerId, { clientX: sx, clientY: sy });
-      if (activePointersRef.current.size === 2 && pinchStartDistRef.current && pinchStartZoomRef.current !== null) {
-        const ptList = Array.from(activePointersRef.current.values());
-        const cd = Math.hypot(ptList[0].clientX - ptList[1].clientX, ptList[0].clientY - ptList[1].clientY);
-        const nz = Math.max(0.1, Math.min(10, pinchStartZoomRef.current * (cd / pinchStartDistRef.current)));
-        const midX = (ptList[0].clientX + ptList[1].clientX) / 2, midY = (ptList[0].clientY + ptList[1].clientY) / 2;
-        const prevZ = zoomRef.current; const mwx = (midX - rect.left - panRef.current.x) / prevZ, mwy = (midY - rect.top - panRef.current.y) / prevZ;
+    if (role === "gesture") {
+      const ptList = inputRouterRef.current.navigationPoints();
+      if (ptList.length === 2 && pinchStartDistRef.current !== null && pinchStartZoomRef.current !== null) {
+        const cd = Math.hypot(ptList[0].x - ptList[1].x, ptList[0].y - ptList[1].y);
+        const previousDistance = pinchStartDistRef.current;
+        if (previousDistance < 1 || cd < 1) return;
+        const nz = Math.max(0.1, Math.min(10, zoomRef.current * (cd / previousDistance)));
+        const midX = (ptList[0].x + ptList[1].x) / 2, midY = (ptList[0].y + ptList[1].y) / 2;
+        const previousMid = lastPanPosRef.current ?? { x: midX, y: midY };
+        const prevZ = zoomRef.current; const mwx = (previousMid.x - rect.left - panRef.current.x) / prevZ, mwy = (previousMid.y - rect.top - panRef.current.y) / prevZ;
         panRef.current = { x: midX - rect.left - mwx * nz, y: midY - rect.top - mwy * nz }; zoomRef.current = nz;
+        pinchStartDistRef.current = cd;
+        lastPanPosRef.current = { x: midX, y: midY };
         requestDraw(); return;
       }
-      if (activePointersRef.current.size === 1 && isPanningRef.current && lastPanPosRef.current) {
-        panRef.current = { x: panRef.current.x + (sx - lastPanPosRef.current.x), y: panRef.current.y + (sy - lastPanPosRef.current.y) };
-        lastPanPosRef.current = { x: sx, y: sy }; requestDraw(); return;
-      }
+      return;
     }
 
-    if (isPanningRef.current && lastPanPosRef.current && e.pointerType !== "touch") {
+    if (role === "pan" && isPanningRef.current && lastPanPosRef.current) {
       panRef.current = { x: panRef.current.x + (sx - lastPanPosRef.current.x), y: panRef.current.y + (sy - lastPanPosRef.current.y) };
       lastPanPosRef.current = { x: sx, y: sy }; requestDraw(); return;
+    }
+
+    if (role !== "edit" || e.pointerId !== activePointerIdRef.current) {
+      if (toolRef.current === "eraser") requestDraw();
+      return;
     }
 
     if (isDraggingSelectionRef.current && dragStartWorldRef.current) {
@@ -701,7 +743,7 @@ export default function Canvas({
       if (toolRef.current === "eraser") requestDraw(); return;
     }
 
-    if (toolRef.current === "lasso") { lassoPointsRef.current.push(wp); drawImmediate(); return; }
+    if (activeToolRef.current === "lasso") { lassoPointsRef.current.push(wp); drawImmediate(); return; }
     
     if (currentStrokeRef.current) {
       const samples = coalesced.length > 0 ? coalesced : [e.nativeEvent];
@@ -723,19 +765,16 @@ export default function Canvas({
   };
 
   const handlePointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const role = inputRouterRef.current.end(e.pointerId);
     const canvas = canvasRef.current; 
     try { if (canvas) canvas.releasePointerCapture(e.pointerId); } catch {}
-    
-    if (e.pointerType === "touch") {
-      activePointersRef.current.delete(e.pointerId);
-      if (activePointersRef.current.size < 2) { pinchStartDistRef.current = null; pinchStartZoomRef.current = null; }
-      if (activePointersRef.current.size === 0) { isPanningRef.current = false; lastPanPosRef.current = null; onTransformChange?.(panRef.current, zoomRef.current); }
-    }
-    
-    if (isPanningRef.current && e.pointerType !== "touch") { 
+    if (role === "pan" || role === "gesture") {
       isPanningRef.current = false; lastPanPosRef.current = null; 
+      pinchStartDistRef.current = null; pinchStartZoomRef.current = null;
       onTransformChange?.(panRef.current, zoomRef.current); return; 
     }
+    if (role !== "edit" || e.pointerId !== activePointerIdRef.current) return;
+    textOpenedByPointerRef.current = false;
 
     if (isDraggingSelectionRef.current) {
       if (transformModeRef.current && transformModeRef.current !== "translate" && transformCurrentRef.current) {
@@ -753,34 +792,37 @@ export default function Canvas({
     }
 
     if (isDrawingRef.current && e.pointerId === activePointerIdRef.current) {
-      if (toolRef.current === "lasso") {
+      if (activeToolRef.current === "lasso") {
         const poly = lassoPointsRef.current;
         if (poly.length > 2) {
           selectedIdsRef.current = { strokes: strokesRef.current.filter(s => !s.isErased && s.points.some(pt => isPointInPolygon(pt, poly))).map(s => s.strokeId), images: imagesRef.current.filter(img => isPointInPolygon({ x: img.x + img.width / 2, y: img.y + img.height / 2 }, poly)).map(img => img.id), texts: textsRef.current.filter(txt => isPointInPolygon({ x: txt.x + 10, y: txt.y + 10 }, poly)).map(txt => txt.id) };
         }
         lassoPointsRef.current = [];
       } else if (currentStrokeRef.current) {
-        const finalStroke = { ...currentStrokeRef.current, endTime: Date.now() };
-        strokesRef.current = [...strokesRef.current, finalStroke];
-        setStrokes(prev => [...prev, finalStroke]);
+        const finalStroke = currentStrokeRef.current;
+        const finishedAt = Date.now();
+        const eraseTimes = new Map(pendingEraseTimesRef.current);
+        strokesRef.current = commitStrokeAction(strokesRef.current, finalStroke, finishedAt, eraseTimes);
+        setStrokes(prev => commitStrokeAction(prev, finalStroke, finishedAt, eraseTimes));
       }
-      isDrawingRef.current = false; currentStrokeRef.current = null; activePointerIdRef.current = null; activeDrawingPointerTypeRef.current = null;
+      isDrawingRef.current = false; currentStrokeRef.current = null; activePointerIdRef.current = null;
+      erasedPreviewIdsRef.current.clear();
+      pendingEraseTimesRef.current.clear();
       onTransformChange?.(panRef.current, zoomRef.current);
       requestDraw();
     }
   };
 
   const handlePointerCancel = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (e.pointerType === "touch") activePointersRef.current.delete(e.pointerId);
-
-    if (isDrawingRef.current && e.pointerId === activePointerIdRef.current) {
-      if (currentStrokeRef.current) {
-        const finalStroke = { ...currentStrokeRef.current, endTime: Date.now() };
-        strokesRef.current = [...strokesRef.current, finalStroke];
-        setStrokes(prev => [...prev, finalStroke]);
-      }
-      isDrawingRef.current = false; currentStrokeRef.current = null; activePointerIdRef.current = null; activeDrawingPointerTypeRef.current = null;
-      requestDraw();
+    // Preserve a genuine partial pen/mouse stroke; touch cancellation may be palm rejection.
+    if (e.pointerType !== "touch" && currentStrokeRef.current && e.pointerId === activePointerIdRef.current) {
+      handlePointerUp(e);
+      return;
+    }
+    const role = inputRouterRef.current.end(e.pointerId);
+    if (role === "edit" || role === "pan" || role === "gesture") {
+      cancelInteraction();
+      onTransformChange?.(panRef.current, zoomRef.current);
     }
   };
 
@@ -814,6 +856,7 @@ export default function Canvas({
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerCancel}
+        onLostPointerCapture={handlePointerCancel}
         onContextMenu={e => e.preventDefault()}
         style={{
           position: "absolute", top: 0, left: 0,
